@@ -1,0 +1,10 @@
+{
+    "name": "@heroiclands/labels-action",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "description": "Dependency manifest for the labels composite action. Not published — the action installs this at run time so the script can parse the registry.",
+    "dependencies": {
+        "yaml": "^2.8.1"
+    }
+}

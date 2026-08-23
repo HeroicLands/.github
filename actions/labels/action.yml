@@ -1,0 +1,38 @@
+name: Repository labels
+description: >-
+  Check a repository's .github/labels.yml, or sync GitHub's labels to it. The
+  registry is a closed set: a label GitHub has and the file does not is removed.
+
+inputs:
+  mode:
+    description: >-
+      check — validate the registry and report what syncing would change,
+      touching nothing. sync — make GitHub match the registry.
+    required: false
+    default: check
+  registry:
+    description: Path to the label registry, relative to the repository root.
+    required: false
+    default: .github/labels.yml
+  token:
+    description: >-
+      A token with `issues: write`. Required for `sync`; `check` reads the
+      repository's labels and so wants one too, but degrades to validating the
+      file alone without it.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install the action's own dependency
+      shell: bash
+      run: npm install --prefix "$GITHUB_ACTION_PATH" --no-audit --no-fund --silent
+
+    - name: ${{ inputs.mode }}
+      shell: bash
+      env:
+        LABELS_MODE: ${{ inputs.mode }}
+        LABELS_REGISTRY: ${{ inputs.registry }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+      run: node "$GITHUB_ACTION_PATH/labels.mjs"
