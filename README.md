@@ -70,3 +70,47 @@ npm package to hold 130 lines of `fetch` calls would have added a release
 pipeline to maintain. What the code actually is, is CI: it runs on a push, it
 talks to the GitHub API, it needs a repository token. So it lives where that is
 ordinary.
+
+## `actions/todos`
+
+Fails when a committed comment carries a `TODO`/`FIXME` marker.
+
+```yaml
+# as a step in an existing workflow — it needs a checkout and nothing else
+- uses: actions/checkout@v4
+- uses: HeroicLands/.github/actions/todos@main
+```
+
+| Input | Default | |
+| --- | --- | --- |
+| `paths` | `src` | files and directories to scan, comma- or newline-separated |
+| `extensions` | `.ts,.tsx,.js,.jsx,.mjs,.cjs` | which files to pick out of a scanned directory |
+| `markers` | `TODO,FIXME` | the forbidden words, matched case-sensitively |
+
+A directory is walked recursively, skipping `node_modules`; a path naming a
+file is scanned as named, whatever its extension. A path that does not exist
+fails, and so does a run that selected no files at all — a check that examined
+nothing is not a passing check.
+
+**Why a marker is forbidden at all.** It is a note to nobody. It duplicates the
+issue that should carry the work and drifts out of sync with it, and in a
+published doc comment it leaks onto the API site as documentation prose. File
+or find an issue, record the code-site context there, and leave the code clean.
+
+**What it will not flag.** String and template-literal *contents* are blanked
+before matching, and only the comment portion of a line is examined — so
+`const label = "TODO"` is not a finding. One useful consequence: a markdown
+code span is a backtick string to the blanker, so a doc comment can state the
+rule (``the `TODO` marker``) without tripping it.
+
+Findings are `file:line:column: severity: message`, and the column is the
+marker's own rather than the start of the line, so an editor opens on the word.
+
+The rule is universal, and only the file selection ever differed between
+repositories — which is why those are inputs and nothing else is. Like the
+label registry, this is repository hygiene rather than a build: it runs in CI,
+it needs no build, and it wants nothing but a checkout. It takes no dependency
+either, not even to format a finding; that contract belongs to
+[`content-build`](https://github.com/HeroicLands/content-build), but it is four
+fields joined by colons, and acquiring a build toolchain to write one line
+would be the wrong trade.

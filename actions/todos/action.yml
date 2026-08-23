@@ -1,0 +1,37 @@
+name: Forbidden markers
+description: >-
+  Fail when a committed comment carries a TODO/FIXME marker. Deferred work is
+  tracked in issues, not flagged in code, so a marker in the tree is a note to
+  nobody that drifts out of sync with the issue that should hold it.
+
+inputs:
+  paths:
+    description: >-
+      Files and directories to scan, comma- or newline-separated. A directory
+      is walked recursively; a path naming a file is scanned as named,
+      whatever its extension.
+    required: false
+    default: src
+  extensions:
+    description: >-
+      File extensions to pick out of a scanned directory, comma- or
+      newline-separated. A leading dot is optional.
+    required: false
+    default: .ts,.tsx,.js,.jsx,.mjs,.cjs
+  markers:
+    description: >-
+      The forbidden marker words, comma- or newline-separated. Matched
+      case-sensitively, and only where the marker stands as its own word.
+    required: false
+    default: TODO,FIXME
+
+runs:
+  using: composite
+  steps:
+    - name: Check for forbidden markers
+      shell: bash
+      env:
+        TODOS_PATHS: ${{ inputs.paths }}
+        TODOS_EXTENSIONS: ${{ inputs.extensions }}
+        TODOS_MARKERS: ${{ inputs.markers }}
+      run: node "$GITHUB_ACTION_PATH/todos.mjs"
