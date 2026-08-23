@@ -1,0 +1,21 @@
+name: No AI attribution
+description: >-
+  Fail when a pull request's title, body, or any of its commit messages carries
+  AI/assistant attribution — a Co-Authored-By trailer naming an assistant, or a
+  "Generated with Claude Code"-style signature. Reports and fails; never edits.
+
+inputs:
+  token:
+    description: >-
+      A token with `contents: read` and `pull-requests: read`, used to read the
+      pull request's commit messages. `${{ github.token }}` is enough.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Scan the pull request for attribution
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+      run: node "$GITHUB_ACTION_PATH/no-attribution.mjs"

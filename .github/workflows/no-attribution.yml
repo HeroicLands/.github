@@ -1,0 +1,27 @@
+name: No Attribution
+
+# This repository's own pull requests, checked by the action it publishes.
+#
+# It addresses the action by local path rather than by `HeroicLands/.github@main`
+# like every other repository does, for two reasons: a pull request that changes
+# the action is then checked by its own version of it rather than by the one on
+# `main`, and the action could not otherwise be introduced here without failing
+# the pull request that introduces it. The local path is what needs the checkout.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  no-attribution:
+    name: No AI attribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/no-attribution
+        with:
+          token: ${{ github.token }}
