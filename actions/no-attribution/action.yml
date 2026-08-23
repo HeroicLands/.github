@@ -1,0 +1,26 @@
+name: No AI attribution
+description: >-
+  Fail when a pull request's title, body, or any of its commit messages carries
+  AI/assistant attribution — a Co-Authored-By trailer naming an assistant, or a
+  "Generated with Claude Code"-style signature. Reports and fails; never edits.
+
+inputs:
+  token:
+    description: >-
+      A token with `contents: read` and `pull-requests: read`, used to read
+      the pull request's commit messages. The calling workflow's own
+      `github.token` is enough — pass it wrapped in expression braces there.
+      They are absent here on purpose: an expression anywhere in a manifest,
+      a description included, is evaluated when the manifest loads, and
+      `github` is not a context that an action manifest has. Writing one in
+      this sentence fails every workflow that calls the action.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Scan the pull request for attribution
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+      run: node "$GITHUB_ACTION_PATH/no-attribution.mjs"
