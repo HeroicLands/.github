@@ -328,6 +328,80 @@ jobs:
                   BUILD_SCRIPT: ${{ inputs.build-script }}
               run: npm run "$BUILD_SCRIPT"
 
+            # Cloudflare Pages reads `_headers` only at the DEPLOYMENT ROOT, and
+            # the guard below requires one there. This writes the default when
+            # the build produced none. A package that emits its own keeps it,
+            # byte for byte — nothing here rewrites, merges into, or appends to
+            # an existing file.
+            #
+            # It is written HERE, after the build and before the guard, because
+            # the build is what may have produced one and the guard is what
+            # insists on one; anywhere earlier it could be clobbered by a build
+            # that clears its output directory, and anywhere later it is after
+            # the check it exists to satisfy.
+            #
+            # WHY THESE RULES EXIST. A Pages project answers at host-assigned
+            # addresses — `<project>.pages.dev`, and one
+            # `<deployment>.<project>.pages.dev` per deployment — as well as at
+            # its path on `www.heroiclands.org`. Those addresses are not
+            # advertised, but they serve the same pages, and left alone they are
+            # indexed and compete with the canonical URL.
+            #
+            # WHY THE RULES ARE SCOPED TO THOSE HOSTNAMES rather than applying
+            # `noindex` globally. `:project` and `:version` are Cloudflare's own
+            # placeholders — a named single-segment wildcard — so these two rules
+            # match `*.pages.dev` and nothing else. That scoping is what keeps a
+            # repository correct if it is taken elsewhere: deployed under its own
+            # domain the site stays indexable, and only the host-assigned
+            # addresses are not. A page that must be `noindex` at EVERY address
+            # says so in the document (`<meta name="robots">`), which is body
+            # content and passes through untouched.
+            #
+            # WHAT BECOMES OF THE HEADER AT THE CANONICAL ADDRESS. The hosting
+            # cannot tell the router's request apart from a reader's — same URL,
+            # same address — so the header reaches `www.heroiclands.org` too, on
+            # pages that are being served canonically and must be indexed.
+            # `heroiclands-site`'s Worker therefore STRIPS `X-Robots-Tag` when it
+            # proxies (`worker/src/router.js`, `canonicalHeaders`); that is
+            # deliberate and tested there, and the only place the two addresses
+            # are distinguishable. So the default's job is to emit exactly the
+            # header the router already knows to strip, which this payload is.
+            #
+            # This reasoning previously lived in one consumer's build script
+            # (`sohl-thalorna`, `utils/build-site-root.mjs`), which this default
+            # makes removable. It is recorded here so it is not removed with it.
+            - name: Write the default `_headers` if the build produced none
+              env:
+                  SITE: ${{ inputs.site-dir }}
+              run: |
+                  set -euo pipefail
+
+                  # `-e`, not `-s`: an EMPTY `_headers` is still the package's
+                  # own file and is left exactly as it is, so the guard below
+                  # fails it. Treating empty as absent would replace a broken
+                  # build's output with a passing default and hide it.
+                  if [ -e "${SITE}/_headers" ]; then
+                      echo "${SITE}/_headers came from the build; leaving it untouched."
+                      exit 0
+                  fi
+
+                  # Not conjured if the build emitted no tree at all — the guard
+                  # reports the missing tree, which is the more useful error.
+                  test -d "$SITE" || {
+                      echo "::notice::${SITE} does not exist, so no default _headers was written."
+                      exit 0
+                  }
+
+                  cat > "${SITE}/_headers" <<'HEADERS'
+                  https://:project.pages.dev/*
+                    X-Robots-Tag: noindex
+
+                  https://:version.:project.pages.dev/*
+                    X-Robots-Tag: noindex
+                  HEADERS
+
+                  echo "Wrote the default ${SITE}/_headers."
+
             # Everything below runs BEFORE the upload. A Pages deploy replaces
             # the whole tree, so an unverified build is an outage that reports
             # success.
@@ -366,17 +440,22 @@ jobs:
                       exit 1
                   }
 
-                  # The project answers on its own *.pages.dev address and on
-                  # <package>.pkg.heroiclands.org as well as under
-                  # www.heroiclands.org, and a second indexable address competes
-                  # with the canonical URL. `_headers` marks those hostnames
-                  # noindex — and Pages reads it only at the DEPLOYMENT ROOT,
-                  # which is why it is checked there rather than in the package
-                  # subtree.
+                  # The project answers at its own host-assigned *.pages.dev
+                  # addresses as well as under www.heroiclands.org, and a second
+                  # indexable address competes with the canonical URL.
+                  # `_headers` marks those hostnames noindex — and Pages reads it
+                  # only at the DEPLOYMENT ROOT, which is why it is checked there
+                  # rather than in the package subtree.
+                  #
+                  # Unchanged by the default written above, and still able to
+                  # fail: the default is written only when there is no file at
+                  # all, so a package that emitted an EMPTY `_headers` is caught
+                  # here rather than papered over.
                   test -s "${SITE}/_headers" || {
                       echo "::error::${SITE}/_headers is missing or empty. Without it this" \
                            "deployment is indexable at hostnames that compete with its" \
-                           "canonical address."
+                           "canonical address. A build that writes no _headers at all gets the" \
+                           "default; this means the build wrote an empty one."
                       exit 1
                   }
 
