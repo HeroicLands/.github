@@ -92,6 +92,17 @@
 # `allow-unpublished: true`; otherwise missing credentials fail the run. The
 # alternative — skipping the upload quietly — is a deploy workflow that reports
 # success without deploying, which is the failure mode this whole file is about.
+#
+# `CLOUDFLARE_API_TOKEN` NEEDS TWO PERMISSIONS, not one:
+#
+#   Account → Cloudflare Pages → Edit   the project, the custom domain, the upload
+#   Zone → DNS → Edit                   the CNAME that makes the domain resolve
+#
+# on the zone behind `domain-suffix`. The second was thought optional and is not:
+# registering a custom domain with a Pages project does NOT create its DNS
+# record, so a token with Pages access alone runs every step green and publishes
+# an address that is NXDOMAIN — four times over on 2026-08-29
+# (HeroicLands/.github#10).
 name: Deploy a package site to Cloudflare Pages
 
 on:
@@ -183,9 +194,14 @@ on:
         secrets:
             CLOUDFLARE_API_TOKEN:
                 description: >-
-                    Pages:Edit on the account that hosts this package, and — the
-                    first time a package is published — enough zone access to add
-                    its custom domain.
+                    TWO permissions, both required: Account → Cloudflare Pages →
+                    Edit on the account that hosts this package, and Zone → DNS →
+                    Edit on the zone behind `domain-suffix`. The second is not
+                    optional and not only for a new package: registering a custom
+                    domain with a Pages project does not create its DNS record,
+                    so a token holding Pages access alone deploys green and
+                    publishes an address that does not resolve
+                    (HeroicLands/.github#10).
                 required: false
             CLOUDFLARE_ACCOUNT_ID:
                 description: The Cloudflare account holding the Pages project.
@@ -575,6 +591,185 @@ jobs:
                   jq -r '(.errors // []) | .[] | "  \(.code): \(.message)"' <<<"$body" || echo "$body"
                   echo "::error::Until this hostname exists, /${DOMAIN%%.*}/ has nothing to proxy to."
                   exit 1
+
+            # The step above REGISTERS A HOSTNAME WITH THE PAGES PROJECT. It does
+            # not create a DNS record, and nothing else did either: on 2026-08-29
+            # four packages deployed with every step green and all four addresses
+            # were NXDOMAIN until seven CNAMEs were made by hand
+            # (HeroicLands/.github#10). The dashboard does two things where the
+            # API does one — "Add a custom domain" shows a *Confirm new DNS
+            # record* screen and **Activate domain** writes the CNAME as well as
+            # registering the name — and the registration answers `success: true`
+            # on its own, which is what made the gap invisible.
+            #
+            # A SEPARATE STEP, not the tail of the one above, and that is the
+            # whole reason this works: that step returns early when the hostname
+            # is already registered, which is precisely the state the bug leaves
+            # behind. Folded in after its `exit 0`, this would never run for any
+            # of the packages that already have the problem.
+            #
+            # TOKEN SCOPE — previously an open question, now settled by evidence.
+            # This needs **Zone → DNS → Edit** on the zone behind `domain-suffix`
+            # in addition to **Account → Cloudflare Pages → Edit**. A token
+            # holding only the latter reproduces this bug exactly: green run,
+            # hostname registered, no record, nothing resolves. So a 401/403 here
+            # fails the run naming the permission rather than being tolerated.
+            - name: Ensure the custom domain has a DNS record
+              if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
+              env:
+                  PROJECT: ${{ inputs.project }}
+                  DOMAIN: ${{ steps.pkg.outputs.domain }}
+                  SUFFIX: ${{ inputs.domain-suffix }}
+              run: |
+                  set -euo pipefail
+                  api="https://api.cloudflare.com/client/v4"
+                  auth=(-H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+                  work=$(mktemp -d)
+                  target="${PROJECT}.pages.dev"
+
+                  # Response body to a file, HTTP status on stdout into `code`.
+                  # The body cannot come back through a command substitution as
+                  # well: that runs in a subshell, so a `code` assigned in one
+                  # would not survive — and neither would an `exit` from it.
+                  call() {
+                      local name=$1
+                      shift
+                      code=$(curl -sS -o "${work}/${name}.json" -w '%{http_code}' \
+                             "${auth[@]}" "$@")
+                  }
+
+                  # 2xx AND `success: true`. Cloudflare answers both, and this
+                  # bug is what a half-checked success looks like.
+                  ok() {
+                      case "$code" in 2??) ;; *) return 1 ;; esac
+                      jq -e '.success == true' >/dev/null < "${work}/${1}.json"
+                  }
+
+                  # One failure shape for every call in this step. Nothing here
+                  # is tolerated: a green run that leaves the address
+                  # unreachable is the entire bug being fixed.
+                  fail() {
+                      local name=$1 what=$2
+                      case "$code" in
+                        401|403)
+                          echo "::error::Cloudflare answered ${code} for ${what}. The API token" \
+                               "needs Zone → DNS → Edit on the zone behind ${SUFFIX}, in addition" \
+                               "to Account → Cloudflare Pages → Edit. A token carrying only Pages" \
+                               "access registers ${DOMAIN} on ${PROJECT} and still leaves it" \
+                               "unresolvable — that is this exact bug." ;;
+                        *)
+                          echo "::error::Cloudflare answered ${code} for ${what}." ;;
+                      esac
+                      jq -r '(.errors // []) | .[] | "  \(.code): \(.message)"' \
+                         < "${work}/${name}.json" || cat "${work}/${name}.json"
+                      echo "::error::Without a DNS record, ${DOMAIN} does not resolve and" \
+                           "/${DOMAIN%%.*}/ has nothing to proxy to."
+                      exit 1
+                  }
+
+                  # Resolve the zone BY NAME, never hardcoded: `domain-suffix` is
+                  # an input and a consumer may publish under another one. The
+                  # zone is a SUFFIX of the suffix and not necessarily equal to
+                  # it — `pkg.heroiclands.org` lives in zone `heroiclands.org` —
+                  # so walk it a label at a time and take the first real zone.
+                  zone=""
+                  zone_id=""
+                  candidate="$SUFFIX"
+                  while : ; do
+                      call zone --get --data-urlencode "name=${candidate}" "${api}/zones"
+                      ok zone || fail zone "the zone lookup"
+                      if [ "$(jq '(.result // []) | length' < "${work}/zone.json")" -gt 0 ]; then
+                          zone=$(jq -r '.result[0].name' < "${work}/zone.json")
+                          zone_id=$(jq -r '.result[0].id' < "${work}/zone.json")
+                          break
+                      fi
+                      case "$candidate" in
+                        *.*.*) candidate="${candidate#*.}" ;;
+                        *)     break ;;
+                      esac
+                  done
+
+                  if [ -z "$zone_id" ]; then
+                      echo "::error::No Cloudflare zone found for ${SUFFIX}, nor for any parent" \
+                           "domain of it. Either the token cannot see the zone — it needs" \
+                           "Zone → DNS → Edit on it — or domain-suffix names a domain this" \
+                           "account does not host."
+                      exit 1
+                  fi
+
+                  # The record name is the SUBDOMAIN inside the zone, not the
+                  # FQDN. Cloudflare accepts either on create, but every record
+                  # made by hand is `<package>.pkg` in zone `heroiclands.org`,
+                  # and one shape across the set is what keeps them comparable.
+                  case "$DOMAIN" in
+                    *."${zone}") record="${DOMAIN%".${zone}"}" ;;
+                    *) echo "::error::${DOMAIN} is not inside zone ${zone}."; exit 1 ;;
+                  esac
+
+                  # Idempotent by inspection, the same shape as the `has_domain`
+                  # guard above: look first, create only what is absent. Matched
+                  # on the name alone rather than name-and-type, because an A or
+                  # ALIAS record occupying the name would equally be there and
+                  # equally not be ours to replace.
+                  found=""
+                  lookup() {
+                      call list --get --data-urlencode "name=${DOMAIN}" \
+                           "${api}/zones/${zone_id}/dns_records"
+                      ok list || fail list "the DNS record lookup"
+                      found=$(jq '(.result // []) | length' < "${work}/list.json")
+                  }
+
+                  lookup
+                  if [ "$found" -gt 0 ]; then
+                      rtype=$(jq -r '.result[0].type' < "${work}/list.json")
+                      rcontent=$(jq -r '.result[0].content' < "${work}/list.json")
+                      rproxied=$(jq -r '.result[0].proxied' < "${work}/list.json")
+                      if [ "$rtype" = "CNAME" ] && [ "$rcontent" = "$target" ]; then
+                          echo "${DOMAIN} already resolves: CNAME → ${target} (proxied=${rproxied})."
+                          if [ "$rproxied" != "true" ]; then
+                              echo "::warning::That record is not proxied. The router fetches" \
+                                   "${DOMAIN} as an origin, and an unproxied record changes that" \
+                                   "path. Every record made by hand is proxied; proxy this one too."
+                          fi
+                      else
+                          echo "::warning::${DOMAIN} already has a ${rtype} record pointing at" \
+                               "${rcontent}, not ${target}. Left alone — this step creates a" \
+                               "record that is missing, it does not overwrite one somebody set" \
+                               "deliberately. If /${DOMAIN%%.*}/ does not reach ${PROJECT}, that" \
+                               "record is why."
+                      fi
+                      exit 0
+                  fi
+
+                  echo "Creating CNAME ${record} → ${target} in zone ${zone}."
+                  # `proxied: true` deliberately: the router fetches these
+                  # hostnames as origins and every existing record is proxied.
+                  call create -X POST -H 'Content-Type: application/json' \
+                       --data "$(jq -nc --arg n "$record" --arg c "$target" \
+                                 '{type: "CNAME", name: $n, content: $c, proxied: true}')" \
+                       "${api}/zones/${zone_id}/dns_records"
+                  create_code="$code"
+
+                  if ok create; then
+                      echo "Created ${record}.${zone} → ${target}, proxied."
+                      exit 0
+                  fi
+
+                  # A permission refusal is never a race — say so now, before a
+                  # second call fails the same way and blames the lookup.
+                  case "$code" in 401|403) fail create "the DNS record create" ;; esac
+
+                  # Otherwise it may be a concurrent run that got there first.
+                  # Ask again rather than key on an error code, exactly as the
+                  # domain step does.
+                  lookup
+                  if [ "$found" -gt 0 ]; then
+                      echo "${DOMAIN} has a record; a concurrent run created it."
+                      exit 0
+                  fi
+
+                  code="$create_code"
+                  fail create "the DNS record create"
 
             # No cache purge follows. Every `/<package>/` response is served
             # through the routing Worker straight from the Pages project, with
