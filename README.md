@@ -117,9 +117,22 @@ it catches a collapsed build, it is not an assertion about today's page count.
 The two fixed checks are not optional extras. `404.html` is what makes Pages
 answer an unmatched path with a real 404 instead of a 200 carrying the home
 page, which reads as success to every link checker there is. `_headers` marks
-the project's `*.pages.dev` and `*.pkg.heroiclands.org` addresses `noindex`, and
-Pages reads it **only at the deployment root** — which is why it is checked
-there rather than in the package subtree.
+the project's host-assigned `*.pages.dev` addresses `noindex`, and Pages reads
+it **only at the deployment root** — which is why it is checked there rather
+than in the package subtree.
+
+**The workflow writes `_headers` for you if the build does not.** It is
+identical for every package — `:project` and `:version` are Cloudflare's own
+placeholders, so not even the package name appears in it — and the reason it
+exists is generic too, so each package copying the same six lines only spread
+the payload and lost the reasoning with it. The default is written after the
+build and before the guard; a package that emits its own keeps it byte for byte,
+and an **empty** `_headers` is still the package's file and still fails the
+guard. The rules are deliberately scoped to those hostnames rather than applied
+globally: under its own domain a copy of the repository stays indexable, and
+only the host-assigned addresses do not. `heroiclands-site`'s router strips
+`X-Robots-Tag` when it proxies, because the hosting cannot tell its request from
+a reader's, so the header reaches the canonical address and is removed there.
 
 **The mode is read from `package-build.config.yaml`, never passed in**, so the
 guard cannot be told one thing while the build does another. `publish.site` was
@@ -258,8 +271,8 @@ seventh package is a `project:` name and, if it publishes content, a floor.**
 
 1. Set `contentPackage` and `publish.site` in `package-build.config.yaml`.
 2. Give the repository a `build:site` script that writes
-   `build/site/<package>/` (Hugo `publishDir`), a `404.html` in it, and
-   `build/site/_headers`.
+   `build/site/<package>/` (Hugo `publishDir`) with a `404.html` in it.
+   `build/site/_headers` is written for you unless the build produces one.
 3. Add the four secrets-and-`project` lines above.
 4. Push. The hosting project and `<package>.pkg.heroiclands.org` are created on
    the first run; the router already knows how to reach them.
