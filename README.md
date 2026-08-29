@@ -12,6 +12,271 @@ the content tree, package-build reads `lang/`, `styles/`, `src/`, the assets and
 the manifest. Repository governance is neither, which is what this repository is
 for.
 
+## `.github/workflows/deploy-package-site.yml`
+
+Builds a package's website and publishes it at
+`https://www.heroiclands.org/<package>/`. The first reusable workflow here, so
+it sets the convention: reusable **workflows** live in `.github/workflows/`
+(GitHub requires it) and are called with `uses:`; composite **actions** live in
+`actions/` and are used as a step.
+
+```yaml
+# .github/workflows/deploy-site.yml — in the package repository
+name: Deploy the site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    uses: HeroicLands/.github/.github/workflows/deploy-package-site.yml@main
+    with:
+      project: sohl-thalorna
+      min-pages: 1200
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+```
+
+| Input | Default | |
+| --- | --- | --- |
+| `project` | — | the Cloudflare Pages project hosting this package |
+| `min-pages` | `0` | fewest pages a complete build emits; **required** in `content` mode, **rejected** in `homepage` mode |
+| `max-pages` | `0` | most it emits, `0` for no ceiling; rejected in `homepage` mode |
+| `build-script` | `build:site` | the npm script that builds the site |
+| `site-dir` | `build/site` | the directory uploaded — the deployment root |
+| `config` | `package-build.config.yaml` | read for `contentPackage` and `publish.site` |
+| `node-version` | `24` | |
+| `hugo-version` | `0.163.3` | shared across packages; `""` skips installing Hugo |
+| `domain-suffix` | `pkg.heroiclands.org` | the namespace the router derives an origin in |
+| `allow-unpublished` | `false` | build and verify without credentials instead of failing |
+
+Secrets are **named, never `secrets: inherit`** — see [Secrets](#secrets)
+below.
+
+### The build contract: one named npm script
+
+The workflow runs `npm run build:site` and takes whatever tree it leaves
+behind. **It does not know the steps**, and this is the load-bearing decision:
+thalorna's script is `build:site-content && hugo && build:site-root`, sohl's is
+`docs:prepare && docs:html && build:kb && site:assemble`, and a package added a
+year from now will differ again. Teaching this workflow any of those shapes
+would mean editing *this* repository every time a package changed how it
+builds — the coupling the shared workflow exists to remove.
+
+What the workflow requires of the script is only its **output**: the site under
+`<site-dir>/<package>/`, i.e. Hugo's `publishDir` set to
+`build/site/<package>`, with `<site-dir>` uploaded whole. The deployed tree
+then carries its own prefix physically, so the router proxies `/<package>/…`
+straight through without rewriting the path and the deployment behaves
+identically at the project's own address
+([heroiclands-site#25](https://github.com/HeroicLands/heroiclands-site/issues/25)).
+A build that publishes Hugo's default `public/` 404s at every address this
+deploy serves — and only once the route is live.
+
+The checkout is unshallow (`fetch-depth: 0`, so tags come with it) and
+`GH_TOKEN` is in the build step's environment. That is what lets a package's
+build resolve and check out **another ref of its own repository** — sohl
+documents its newest release tag, not `main` — with nothing here knowing that
+any package does so.
+
+### The completeness guard
+
+A Cloudflare Pages deploy **replaces the whole tree**, so a build that silently
+emits nothing takes the live site down and reports success. Nothing is uploaded
+until the tree has been proven. Every mode is checked; the mode only changes the
+page count.
+
+| | `publish.site: content` | `publish.site: homepage` |
+| --- | --- | --- |
+| `<pkg>/index.html` | non-empty | non-empty |
+| `<pkg>/404.html` | non-empty | non-empty |
+| `<site-dir>/_headers` | non-empty | non-empty |
+| pages (`index.html` count) | `min-pages` ≤ n ≤ `max-pages` | **exactly 1** |
+| bounds settable by the caller | yes, and `min-pages` is required | **no** |
+
+**Homepage-only is the stricter check, not the absent one.** It is two-sided: a
+build that emitted nothing fails, and so does a build that emitted more than the
+homepage. `kethira` and `harnadventures` publish one page because publishing
+their content would breach the fan-content licences they ship under (Keléstia's
+Fan Material Guidelines; Lythia's terms), so "exactly one page" is a licensing
+boundary. The caller cannot widen it — passing `min-pages` or `max-pages` in
+homepage mode fails the run, because a boundary an input can widen is not a
+boundary.
+
+**`min-pages` is required in `content` mode.** A content package that states no
+floor has no guard at all, and a guard that cannot fail is the failure mode this
+workflow exists to prevent. Set it below the real figure with room for growth —
+it catches a collapsed build, it is not an assertion about today's page count.
+
+The two fixed checks are not optional extras. `404.html` is what makes Pages
+answer an unmatched path with a real 404 instead of a 200 carrying the home
+page, which reads as success to every link checker there is. `_headers` marks
+the project's `*.pages.dev` and `*.pkg.heroiclands.org` addresses `noindex`, and
+Pages reads it **only at the deployment root** — which is why it is checked
+there rather than in the package subtree.
+
+**The mode is read from `package-build.config.yaml`, never passed in**, so the
+guard cannot be told one thing while the build does another. `publish.site` was
+a boolean before package-build 5.0; a boolean is refused here with the same
+message the toolchain gives, rather than mapped onto the nearest mode.
+
+### The hosting project and the custom domain
+
+Both are created if missing, idempotently, before the upload.
+
+A Pages project is **account** state, not repository state. Without creating it,
+a clone of a package repository plus a scoped token still could not publish:
+somebody would have to know to visit a dashboard first, and removing exactly
+that hidden step is what makes a package movable. It is checked before it is
+created, so a genuine error — a bad token, a revoked scope — still fails the run
+rather than hiding inside a tolerated create.
+
+The custom domain is `<package>.<domain-suffix>`, e.g.
+`kethira.pkg.heroiclands.org`. The router derives a package's origin from its
+prefix alone and holds no list of packages, so adding a package is no edit to
+`heroiclands-site` — but only if the hostname exists, and the only place that
+can be guaranteed is here, beside the project creation. Adding it is idempotent
+by inspection (list, then add if absent) and tolerant on the race (an add that
+lost to a concurrent run is verified, not assumed).
+
+One consequence worth knowing before the first publish of a *new* package: the
+API token needs enough zone access to add the domain. An existing package is
+unaffected — its domain is already there, so the list finds it and nothing is
+added.
+
+### Secrets
+
+Passed **by name**, never `secrets: inherit`. Inheriting hands a workflow in
+another repository every secret the caller holds — npm publish tokens, Foundry
+credentials, release tokens — for a job that needs two of them. Naming them also
+documents the requirement at the call site and fails when one is missing rather
+than three steps later.
+
+Both are declared optional, so a repository still being set up can call this for
+the build-and-guard half. It has to **say so** with `allow-unpublished: true`;
+otherwise missing credentials fail the run. Skipping the upload quietly would
+make this a deploy workflow that reports success without deploying, which is the
+same failure the completeness guard exists to catch.
+
+### The six callers
+
+`sohl` and `thalorna` publish content; the other four publish a homepage. Note
+what changes between them: a project name, and — for content packages — a floor.
+
+```yaml
+# Song-of-Heroic-Lands-FoundryVTT/.github/workflows/deploy-sohl.yml
+# `sohl` also deploys on a new release, because half of what it publishes (the
+# API documentation) tracks the newest release tag rather than `main`.
+on:
+  push: { branches: [main] }
+  workflow_dispatch:
+permissions: { contents: read }
+jobs:
+  deploy:
+    uses: HeroicLands/.github/.github/workflows/deploy-package-site.yml@main
+    with: { project: sohl-site, min-pages: 1000 }
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+```
+
+```yaml
+# sohl-thalorna/.github/workflows/deploy-site.yml
+jobs:
+  deploy:
+    uses: HeroicLands/.github/.github/workflows/deploy-package-site.yml@main
+    with: { project: sohl-thalorna, min-pages: 1200 }
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+```
+
+```yaml
+# HarnMaster-3-FoundryVTT/.github/workflows/deploy-site.yml
+jobs:
+  deploy:
+    uses: HeroicLands/.github/.github/workflows/deploy-package-site.yml@main
+    with: { project: hm3-site }
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+```
+
+```yaml
+# sohl-kethira-basic/.github/workflows/deploy-site.yml
+# Homepage-only, and no bound is stated: the guard fixes it at exactly one page
+# and this caller could not raise it if it tried. That is deliberate — the bound
+# is Keléstia's Fan Material Guidelines, not a preference.
+jobs:
+  deploy:
+    uses: HeroicLands/.github/.github/workflows/deploy-package-site.yml@main
+    with: { project: sohl-kethira-basic }
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+```
+
+```yaml
+# harn-ensemble/.github/workflows/deploy-site.yml
+jobs:
+  deploy:
+    uses: HeroicLands/.github/.github/workflows/deploy-package-site.yml@main
+    with: { project: harn-ensemble }
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+```
+
+```yaml
+# harn-adventures/.github/workflows/deploy-site.yml
+jobs:
+  deploy:
+    uses: HeroicLands/.github/.github/workflows/deploy-package-site.yml@main
+    with: { project: harn-adventures }
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+```
+
+The floors are each package's own, taken from a real build with room to spare:
+`sohl`'s knowledgebase compiles ~1,500 pages and `thalorna`'s content tree
+~2,500, so `1000` and `1200` catch a collapse without tripping on ordinary
+editing. Raise a floor when a package grows; never raise one to make a red run
+green.
+
+Everything else — the package name, the publishing mode, the origin hostname,
+the guard, the runner, the Hugo version — is derived or shared. **Adding the
+seventh package is a `project:` name and, if it publishes content, a floor.**
+
+### Adding a package
+
+1. Set `contentPackage` and `publish.site` in `package-build.config.yaml`.
+2. Give the repository a `build:site` script that writes
+   `build/site/<package>/` (Hugo `publishDir`), a `404.html` in it, and
+   `build/site/_headers`.
+3. Add the four secrets-and-`project` lines above.
+4. Push. The hosting project and `<package>.pkg.heroiclands.org` are created on
+   the first run; the router already knows how to reach them.
+
+### Why a reusable workflow and not a composite action
+
+A composite action is a step; this is a whole job — a runner, a checkout, a
+Node and Hugo toolchain, a `concurrency` group and an environment. A composite
+action cannot declare any of those, so every caller would have to restate them,
+which is most of the hundred lines the duplication was made of. `uses:` at the
+job level moves the entire job, which is the unit that was actually being
+copied.
+
+The `@main` reference is deliberate, matching the two composite actions: these
+are org-internal and every caller wants the current one. A package that needs to
+pin can reference a SHA.
+
 ## `actions/labels`
 
 Checks a repository's `.github/labels.yml`, or syncs GitHub's labels to it.
