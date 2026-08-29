@@ -1,0 +1,523 @@
+# Build a package's website and publish it at `https://www.heroiclands.org/<package>/`.
+#
+# Six packages publish a subtree of one site from six repositories. Two of them
+# — `sohl` and `thalorna` — did it with a hand-written ~100-line workflow each,
+# and the four that had none were about to get four more copies. Copies drift:
+# duplicated build logic in `sohl-thalorna` diverged from the toolchain and cost
+# a red `main`, a separately-applied fix and a hard break on an upstream rename
+# (HeroicLands/.github#5, sohl-thalorna#85). So the workflow lives here once and
+# a package calls it.
+#
+# WHAT A PACKAGE STILL OWNS: its build. This workflow runs one npm script and
+# knows nothing about what that script does — see "The build contract" below.
+#
+# WHAT THIS WORKFLOW OWNS: the runner, the completeness guard, the hosting
+# project, the custom domain, and the upload. Those are identical for every
+# package and are exactly the parts that must not drift.
+#
+# ---------------------------------------------------------------------------
+# The build contract
+# ---------------------------------------------------------------------------
+#
+# The workflow invokes a NAMED NPM SCRIPT — `build:site` by default — and takes
+# whatever tree it leaves behind. It does not know the steps. thalorna's script
+# is `build:site-content && hugo && build:site-root`; sohl's is
+# `docs:prepare && docs:html && build:kb && site:assemble`. Teaching this
+# workflow either shape would mean editing this repository every time a package
+# changed how it builds, which is the coupling the whole issue exists to remove.
+#
+# The script must leave the site under `<site-dir>/<package>/` — i.e. Hugo's
+# `publishDir` is `build/site/<package>` — and `<site-dir>` is what gets
+# uploaded. The deployed tree therefore carries its own prefix physically, which
+# is what lets the router proxy `/<package>/…` straight through without
+# rewriting the path, and lets the same deployment behave identically at the
+# project's own address (heroiclands-site#25). A build that publishes Hugo's
+# default `public/` 404s at every address this deploy serves, and only once the
+# route is live.
+#
+# The checkout is unshallow and carries tags, so a package's own build script
+# can resolve and check out another ref — sohl builds its API documentation from
+# the newest release tag rather than from `main` — without this workflow knowing
+# that any package does so. `GH_TOKEN` is in the build step's environment for
+# the same reason.
+#
+# ---------------------------------------------------------------------------
+# The completeness guard
+# ---------------------------------------------------------------------------
+#
+# A Cloudflare Pages deploy REPLACES THE WHOLE TREE. A build that silently emits
+# nothing therefore takes the live site down, and it reads as a green run. On
+# 2026-08-28 a thalorna build emitted 2 pages instead of 1,715 and the guard is
+# the only reason that was caught before it shipped.
+#
+# So nothing is uploaded until the tree has been proven, and the proof is
+# derived from the package's publishing mode rather than configured per call:
+#
+#   publish.site: content   index.html and 404.html non-empty, `_headers` at the
+#                           deployment root, and `min-pages` <= pages
+#                           <= `max-pages` (no ceiling when unset). `min-pages`
+#                           is REQUIRED — a content package that states no floor
+#                           has no guard, and a guard that cannot fail is not one.
+#
+#   publish.site: homepage  index.html and 404.html non-empty, `_headers` at the
+#                           deployment root, and EXACTLY ONE page. Not a relaxed
+#                           check — a stricter one, and a two-sided one: a build
+#                           that emitted nothing fails, and so does a build that
+#                           emitted more than the homepage.
+#
+# The homepage bounds are FIXED AT ONE and the caller cannot move them: passing
+# `min-pages` or `max-pages` in homepage mode fails the run. `kethira` and
+# `harnadventures` are homepage-only because publishing their content would
+# breach the fan-content licences they ship under (Keléstia's Fan Material
+# Guidelines; Lythia's terms), so "exactly one page" is a licensing boundary and
+# not a preference. A boundary a caller could widen with an input is not a
+# boundary.
+#
+# The mode is READ FROM `package-build.config.yaml`, never passed in, so it is
+# the same value the toolchain builds from and the two cannot come to disagree
+# about what a package publishes.
+#
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+#
+# Passed BY NAME, never `secrets: inherit`. Inheriting hands a workflow in
+# another repository every secret the caller holds — npm publish tokens, Foundry
+# credentials, release tokens — for a job that needs two of them. Naming them
+# also documents the requirement at the call site and fails when one is missing
+# rather than three steps later.
+#
+# Both are declared optional so a repository that is still being set up can call
+# this workflow for the build-and-guard half. It must say so, with
+# `allow-unpublished: true`; otherwise missing credentials fail the run. The
+# alternative — skipping the upload quietly — is a deploy workflow that reports
+# success without deploying, which is the failure mode this whole file is about.
+name: Deploy a package site to Cloudflare Pages
+
+on:
+    workflow_call:
+        inputs:
+            project:
+                description: >-
+                    The Cloudflare Pages project that hosts this package. Not
+                    derived from the package name: `sohl` is hosted by
+                    `sohl-site` and `thalorna` by `sohl-thalorna`, and renaming
+                    a live project to fit a convention would break its
+                    deployment history.
+                required: true
+                type: string
+            min-pages:
+                description: >-
+                    Fewest pages a complete build of this package emits, counted
+                    as `index.html` files under the package prefix. REQUIRED in
+                    `content` mode and REJECTED in `homepage` mode, where the
+                    count is fixed at exactly one. Set it below the real figure
+                    with room for growth, not at it: it is a floor that catches
+                    a collapsed build, not an assertion about today's page count.
+                required: false
+                default: 0
+                type: number
+            max-pages:
+                description: >-
+                    Most pages a complete build emits; 0 for no ceiling. Rejected
+                    in `homepage` mode. Useful where a package's page count has
+                    an upper bound worth asserting.
+                required: false
+                default: 0
+                type: number
+            build-script:
+                description: >-
+                    The npm script that builds the site into
+                    `<site-dir>/<package>/`. The workflow runs it and knows
+                    nothing else about the build.
+                required: false
+                default: "build:site"
+                type: string
+            site-dir:
+                description: >-
+                    Directory uploaded to Cloudflare Pages — the deployment
+                    ROOT, which holds `_headers` and the `<package>/` subtree.
+                required: false
+                default: "build/site"
+                type: string
+            config:
+                description: >-
+                    The shared package configuration, read for `contentPackage`
+                    and `publish.site`.
+                required: false
+                default: "package-build.config.yaml"
+                type: string
+            node-version:
+                description: Node.js version the build runs on.
+                required: false
+                default: "24"
+                type: string
+            hugo-version:
+                description: >-
+                    Hugo version to install, shared across every package so
+                    there is one bump rather than six. Override to trial a build
+                    ahead of the others; set to the empty string for a package
+                    whose build does not use Hugo.
+                required: false
+                default: "0.163.3"
+                type: string
+            domain-suffix:
+                description: >-
+                    The namespace the router derives a package's origin in:
+                    `/<package>/` is proxied to
+                    `https://<package>.<domain-suffix>`. Changing it here would
+                    have to be matched in `heroiclands-site`'s router.
+                required: false
+                default: "pkg.heroiclands.org"
+                type: string
+            allow-unpublished:
+                description: >-
+                    Build and verify without Cloudflare credentials instead of
+                    failing. For a repository that does not have its hosting
+                    project yet. Never for one that does — a deploy workflow
+                    that reports success without deploying is worse than a red
+                    run.
+                required: false
+                default: false
+                type: boolean
+        secrets:
+            CLOUDFLARE_API_TOKEN:
+                description: >-
+                    Pages:Edit on the account that hosts this package, and — the
+                    first time a package is published — enough zone access to add
+                    its custom domain.
+                required: false
+            CLOUDFLARE_ACCOUNT_ID:
+                description: The Cloudflare account holding the Pages project.
+                required: false
+
+jobs:
+    deploy:
+        runs-on: ubuntu-latest
+
+        # Job-level rather than workflow-level: workflow-level `concurrency` in
+        # a called workflow is evaluated in the caller's context and does not
+        # behave the way it reads. Keyed by the calling repository, so six
+        # packages deploy independently and a package never overtakes itself.
+        concurrency:
+            group: package-site-deploy-${{ github.repository }}
+            cancel-in-progress: false
+
+        # Job-level, so each step's `if` can ask whether the credentials exist:
+        # a secret cannot be tested directly in a condition.
+        env:
+            CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+            CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+        steps:
+            # Unshallow and with tags: a package's build script may resolve
+            # another ref of its own repository (sohl documents its newest
+            # release, not `main`). Nothing here knows which packages do.
+            - name: Checkout
+              uses: actions/checkout@v7
+              with:
+                  # 0 rather than the default 1: it also brings the tags.
+                  fetch-depth: 0
+
+            # The package name and the publishing mode come from the same file
+            # the toolchain builds from, so the guard cannot be told one thing
+            # while the build does another.
+            - name: Read the package and its publishing mode
+              id: pkg
+              env:
+                  CONFIG: ${{ inputs.config }}
+                  MIN_IN: ${{ inputs.min-pages }}
+                  MAX_IN: ${{ inputs.max-pages }}
+                  SUFFIX: ${{ inputs.domain-suffix }}
+              run: |
+                  set -euo pipefail
+
+                  command -v yq >/dev/null 2>&1 || {
+                      echo "::error::yq is not on this runner. It ships with the" \
+                           "GitHub-hosted ubuntu images; a self-hosted runner must install it."
+                      exit 1
+                  }
+                  test -f "$CONFIG" || {
+                      echo "::error::${CONFIG} not found. This workflow reads the package name" \
+                           "and its publishing mode from the shared package-build configuration."
+                      exit 1
+                  }
+
+                  pkg=$(yq -r '.contentPackage // ""' "$CONFIG")
+
+                  # Read plainly — NOT `.publish.site // "homepage"`. `//` is an
+                  # alternative operator, not a null-coalesce: it takes its right
+                  # side for `false` as well as for absent, so the boolean this
+                  # setting used to be would be silently rewritten into the very
+                  # mode the refusal below exists to prevent. An unset value is
+                  # `null`, and only `null` may default.
+                  mode=$(yq -r '.publish.site' "$CONFIG")
+
+                  if [ -z "$pkg" ]; then
+                      echo "::error file=${CONFIG}::contentPackage is not set. It is the path" \
+                           "prefix this package publishes at and the label of its origin hostname."
+                      exit 1
+                  fi
+
+                  # `publish.site` was a boolean until package-build 5.0, where
+                  # `false` read as "no web presence" — which no longer describes
+                  # any package. The toolchain refuses the boolean rather than
+                  # mapping it, because a value quietly reinterpreted still reads
+                  # to its author as what it said. Refuse it the same way here.
+                  case "$mode" in
+                    null|"") mode=homepage ;;
+                    content|homepage) ;;
+                    true)  echo "::error file=${CONFIG}::publish.site is no longer a boolean — write \`site: content\`. Every package publishes an authored homepage, so no value means \"no web presence\"."; exit 1 ;;
+                    false) echo "::error file=${CONFIG}::publish.site is no longer a boolean — write \`site: homepage\`. Every package publishes an authored homepage, so no value means \"no web presence\"."; exit 1 ;;
+                    *)     echo "::error file=${CONFIG}::publish.site must be \`homepage\` or \`content\` (got '${mode}')."; exit 1 ;;
+                  esac
+
+                  if [ "$mode" = "homepage" ]; then
+                      # Fixed at one, and the caller may not move it: the bound is
+                      # a fan-content licensing boundary, and a boundary an input
+                      # can widen is not a boundary.
+                      if [ "${MIN_IN:-0}" -ne 0 ] || [ "${MAX_IN:-0}" -ne 0 ]; then
+                          echo "::error::${pkg} is homepage-only, so it publishes exactly one page" \
+                               "and min-pages / max-pages do not apply. Remove them from the caller."
+                          exit 1
+                      fi
+                      min=1
+                      max=1
+                  else
+                      if [ "${MIN_IN:-0}" -lt 1 ]; then
+                          echo "::error::${pkg} publishes content pages, so the caller must state" \
+                               "min-pages. Without a floor a build that emits nothing passes, and" \
+                               "a Pages deploy replaces the whole tree with it."
+                          exit 1
+                      fi
+                      min="${MIN_IN:-0}"
+                      max="${MAX_IN:-0}"
+                  fi
+
+                  echo "Publishing /${pkg}/ in ${mode} mode; expecting at least ${min} page(s)$( [ "$max" -gt 0 ] && echo " and at most ${max}" || true )."
+                  {
+                      echo "name=${pkg}"
+                      echo "mode=${mode}"
+                      echo "min=${min}"
+                      echo "max=${max}"
+                      echo "domain=${pkg}.${SUFFIX}"
+                  } >> "$GITHUB_OUTPUT"
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v7
+              with:
+                  node-version: ${{ inputs.node-version }}
+                  cache: npm
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Setup Hugo
+              if: ${{ inputs.hugo-version != '' }}
+              uses: peaceiris/actions-hugo@v3
+              with:
+                  hugo-version: ${{ inputs.hugo-version }}
+                  extended: true
+
+            # One script, whatever it contains. `GH_TOKEN` is here because a
+            # build may need to ask this repository about itself — sohl resolves
+            # its newest release tag — not because this workflow uses it.
+            - name: Build the site
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  BUILD_SCRIPT: ${{ inputs.build-script }}
+              run: npm run "$BUILD_SCRIPT"
+
+            # Everything below runs BEFORE the upload. A Pages deploy replaces
+            # the whole tree, so an unverified build is an outage that reports
+            # success.
+            - name: Verify the tree is a complete site
+              env:
+                  SITE: ${{ inputs.site-dir }}
+                  PKG: ${{ steps.pkg.outputs.name }}
+                  MODE: ${{ steps.pkg.outputs.mode }}
+                  MIN: ${{ steps.pkg.outputs.min }}
+                  MAX: ${{ steps.pkg.outputs.max }}
+              run: |
+                  set -euo pipefail
+                  dir="${SITE}/${PKG}"
+
+                  test -d "$dir" || {
+                      echo "::error::${dir} does not exist. The build must publish into" \
+                           "\`<site-dir>/<package>/\` — Hugo's publishDir — so the deployed tree" \
+                           "carries its own prefix physically and the router can pass the path" \
+                           "through unchanged."
+                      exit 1
+                  }
+
+                  # The home page. Its absence is the collapsed-build signature.
+                  test -s "${dir}/index.html" || {
+                      echo "::error::${dir}/index.html is missing or empty."
+                      exit 1
+                  }
+
+                  # Cloudflare Pages serves the deployment's own 404.html with a
+                  # real 404 status, and without one falls back to the site root
+                  # — a soft 404, a 200 carrying the landing page, which reads as
+                  # success to every link checker there is.
+                  test -s "${dir}/404.html" || {
+                      echo "::error::${dir}/404.html is missing or empty. Without it Pages answers" \
+                           "an unmatched path with a 200 carrying the home page."
+                      exit 1
+                  }
+
+                  # The project answers on its own *.pages.dev address and on
+                  # <package>.pkg.heroiclands.org as well as under
+                  # www.heroiclands.org, and a second indexable address competes
+                  # with the canonical URL. `_headers` marks those hostnames
+                  # noindex — and Pages reads it only at the DEPLOYMENT ROOT,
+                  # which is why it is checked there rather than in the package
+                  # subtree.
+                  test -s "${SITE}/_headers" || {
+                      echo "::error::${SITE}/_headers is missing or empty. Without it this" \
+                           "deployment is indexable at hostnames that compete with its" \
+                           "canonical address."
+                      exit 1
+                  }
+
+                  pages=$(find "$dir" -name index.html | wc -l | tr -d ' ')
+                  echo "${dir} carries ${pages} page(s)."
+
+                  if [ "$pages" -lt "$MIN" ]; then
+                      echo "::error::${dir} carries ${pages} page(s), fewer than the ${MIN} a" \
+                           "complete build of this package emits. Refusing to replace the live" \
+                           "site with it."
+                      exit 1
+                  fi
+                  if [ "$MAX" -gt 0 ] && [ "$pages" -gt "$MAX" ]; then
+                      if [ "$MODE" = "homepage" ]; then
+                          echo "::error::${dir} carries ${pages} page(s). A homepage-only package" \
+                               "publishes exactly one: this package's licence covers the module," \
+                               "not the publication of its content. Find what is emitting the" \
+                               "extra pages — a taxonomy, a section landing, a content tree the" \
+                               "build still walks — rather than raising the bound."
+                      else
+                          echo "::error::${dir} carries ${pages} page(s), more than the ${MAX}" \
+                               "this package declares."
+                      fi
+                      exit 1
+                  fi
+
+            # Fail here rather than skipping the upload silently, unless the
+            # caller has said it is not publishing yet.
+            - name: Require the deploy credentials
+              if: ${{ !inputs.allow-unpublished }}
+              run: |
+                  set -euo pipefail
+                  missing=""
+                  [ -n "${CLOUDFLARE_API_TOKEN}" ] || missing="${missing} CLOUDFLARE_API_TOKEN"
+                  [ -n "${CLOUDFLARE_ACCOUNT_ID}" ] || missing="${missing} CLOUDFLARE_ACCOUNT_ID"
+                  if [ -n "$missing" ]; then
+                      echo "::error::The site built and verified, but these secrets were not passed" \
+                           "to this workflow:${missing}. Pass them by name from the caller, or set" \
+                           "\`allow-unpublished: true\` if this package has no hosting project yet."
+                      exit 1
+                  fi
+
+            # A Pages project is ACCOUNT state, not repository state. Without
+            # this, a clone of the package repository plus a scoped token still
+            # could not publish it: someone would have to know to visit a
+            # dashboard first. That hidden step is exactly what a package being
+            # movable means removing, and it costs one API call.
+            #
+            # Checked before creating rather than tolerating a failed create, so
+            # a genuine error — a bad token, a revoked scope — still fails.
+            - name: Ensure the hosting project exists
+              if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
+              env:
+                  PROJECT: ${{ inputs.project }}
+              run: |
+                  set -euo pipefail
+                  api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects"
+                  code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                         -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+                         "${api}/${PROJECT}")
+                  case "$code" in
+                    200) echo "Pages project ${PROJECT} already exists." ;;
+                    404) echo "Creating Pages project ${PROJECT}."
+                         npx --yes wrangler@4 pages project create "${PROJECT}" \
+                           --production-branch=main ;;
+                    *)   echo "::error::Cloudflare answered ${code} for the project lookup."
+                         exit 1 ;;
+                  esac
+
+            # The router derives a package's origin from its prefix alone —
+            # `/kethira/` → `https://kethira.pkg.heroiclands.org` — and holds no
+            # list of packages, so adding one is no edit to `heroiclands-site`
+            # (heroiclands-site#25). That only holds if the hostname exists, and
+            # the only place that can be guaranteed is here, beside the project
+            # creation. Doing it here is what makes a package self-publishing.
+            #
+            # Idempotent by inspection, then tolerant on the race: a domain that
+            # is already there is not an error, and a create that lost to a
+            # concurrent run is verified rather than assumed.
+            - name: Ensure the custom domain is on the project
+              if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
+              env:
+                  PROJECT: ${{ inputs.project }}
+                  DOMAIN: ${{ steps.pkg.outputs.domain }}
+              run: |
+                  set -euo pipefail
+                  api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PROJECT}/domains"
+                  auth=(-H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+
+                  has_domain() {
+                      curl -sS "${auth[@]}" "$api" \
+                        | jq -e --arg d "$DOMAIN" '(.result // []) | any(.name == $d)' >/dev/null
+                  }
+
+                  if has_domain; then
+                      echo "${DOMAIN} is already a custom domain on ${PROJECT}."
+                      exit 0
+                  fi
+
+                  echo "Adding ${DOMAIN} to ${PROJECT}."
+                  body=$(curl -sS "${auth[@]}" -H 'Content-Type: application/json' \
+                         -X POST --data "$(jq -nc --arg d "$DOMAIN" '{name: $d}')" "$api")
+
+                  if jq -e '.success == true' >/dev/null <<<"$body"; then
+                      echo "Added ${DOMAIN}."
+                      exit 0
+                  fi
+
+                  # A concurrent run, or an "already exists" this code does not
+                  # want to key on by number: ask again rather than guess.
+                  if has_domain; then
+                      echo "${DOMAIN} is present on ${PROJECT}."
+                      exit 0
+                  fi
+
+                  echo "::error::Could not add ${DOMAIN} to ${PROJECT}. Cloudflare said:"
+                  jq -r '(.errors // []) | .[] | "  \(.code): \(.message)"' <<<"$body" || echo "$body"
+                  echo "::error::Until this hostname exists, /${DOMAIN%%.*}/ has nothing to proxy to."
+                  exit 1
+
+            # No cache purge follows. Every `/<package>/` response is served
+            # through the routing Worker straight from the Pages project, with
+            # Pages' own `cache-control: public, max-age=0, must-revalidate` and
+            # no `cf-cache-status`; the zone edge holds nothing under the prefix
+            # to invalidate. A `purge_everything` here would evict only OTHER
+            # surfaces' cached objects. If a Cache Rule is ever added over a
+            # package prefix, purge those URLs — not the zone.
+            - name: Deploy to Cloudflare Pages (production)
+              if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
+              uses: cloudflare/wrangler-action@v4
+              with:
+                  apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+                  accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+                  command: >-
+                      pages deploy ${{ inputs.site-dir }}
+                      --project-name=${{ inputs.project }}
+                      --branch=main
+
+            - name: Say why nothing was uploaded
+              if: ${{ env.CLOUDFLARE_API_TOKEN == '' || env.CLOUDFLARE_ACCOUNT_ID == '' }}
+              run: |
+                  echo "::notice::Built and verified /${{ steps.pkg.outputs.name }}/ but did not" \
+                       "upload it: this caller passed no Cloudflare credentials and set" \
+                       "allow-unpublished. Remove that input once the hosting project exists."
