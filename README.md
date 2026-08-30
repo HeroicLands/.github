@@ -158,12 +158,42 @@ can be guaranteed is here, beside the project creation. Adding it is idempotent
 by inspection (list, then add if absent) and tolerant on the race (an add that
 lost to a concurrent run is verified, not assumed).
 
-One consequence worth knowing before the first publish of a *new* package: the
-API token needs enough zone access to add the domain. An existing package is
-unaffected — its domain is already there, so the list finds it and nothing is
-added.
+**Registering the domain is only half of it, and the DNS record is the other
+half.** `POST …/pages/projects/{project}/domains` attaches a hostname to a Pages
+project; it does not write a DNS record, and it answers `success: true` for the
+half it did. The dashboard hides the difference — adding a custom domain by hand
+shows a *Confirm new DNS record* screen and **Activate domain** does both — so
+the gap only surfaced when the first automated deploys ran. Four packages
+deployed green on 2026-08-29 and all four addresses were NXDOMAIN
+([#10](https://github.com/HeroicLands/.github/issues/10)).
+
+So a second step creates the record — `CNAME <package>.pkg → <project>.pages.dev`,
+**proxied**, because the router fetches these hostnames as origins. It is
+idempotent the same way the domain step is (look first, create only what is
+absent) and it is a *separate* step for a specific reason: the domain step
+returns early when the hostname is already registered, which is exactly the
+state this bug leaves behind, so folding the record creation into it would skip
+every package that already has the problem. The zone is resolved by name from
+`domain-suffix` rather than hardcoded, walking the suffix a label at a time
+(`pkg.heroiclands.org` → zone `heroiclands.org`), so a consumer publishing under
+another suffix still works. A record that already exists pointing somewhere else
+is reported as a warning and left alone — this step creates a missing record, it
+does not overwrite deliberate state.
 
 ### Secrets
+
+**The API token needs two permissions, both of them:**
+
+| Permission | What it is for |
+| --- | --- |
+| Account → Cloudflare Pages → Edit | the hosting project, the custom domain, the upload |
+| Zone → DNS → Edit (on the zone behind `domain-suffix`) | the CNAME that makes the domain resolve |
+
+The second is not optional and not only for a new package. A token carrying
+Pages access alone runs every step green, registers the hostname, and publishes
+an address that does not resolve — which is precisely what happened four times
+on 2026-08-29. A DNS call that fails, including on a permissions error, now
+fails the run and names the missing permission.
 
 Passed **by name**, never `secrets: inherit`. Inheriting hands a workflow in
 another repository every secret the caller holds — npm publish tokens, Foundry
@@ -273,9 +303,10 @@ seventh package is a `project:` name and, if it publishes content, a floor.**
 2. Give the repository a `build:site` script that writes
    `build/site/<package>/` (Hugo `publishDir`) with a `404.html` in it.
    `build/site/_headers` is written for you unless the build produces one.
-3. Add the four secrets-and-`project` lines above.
-4. Push. The hosting project and `<package>.pkg.heroiclands.org` are created on
-   the first run; the router already knows how to reach them.
+3. Add the four secrets-and-`project` lines above, with a
+   `CLOUDFLARE_API_TOKEN` carrying **both** permissions in the table above.
+4. Push. The hosting project, the custom domain and its DNS record are created
+   on the first run; the router already knows how to reach them.
 
 ### Why a reusable workflow and not a composite action
 
