@@ -117,22 +117,42 @@ it catches a collapsed build, it is not an assertion about today's page count.
 The two fixed checks are not optional extras. `404.html` is what makes Pages
 answer an unmatched path with a real 404 instead of a 200 carrying the home
 page, which reads as success to every link checker there is. `_headers` marks
-the project's host-assigned `*.pages.dev` addresses `noindex`, and Pages reads
-it **only at the deployment root** — which is why it is checked there rather
-than in the package subtree.
+every address the deployment answers on that is not the canonical one `noindex`,
+and Pages reads it **only at the deployment root** — which is why it is checked
+there rather than in the package subtree.
 
 **The workflow writes `_headers` for you if the build does not.** It is
-identical for every package — `:project` and `:version` are Cloudflare's own
-placeholders, so not even the package name appears in it — and the reason it
-exists is generic too, so each package copying the same six lines only spread
-the payload and lost the reasoning with it. The default is written after the
-build and before the guard; a package that emits its own keeps it byte for byte,
-and an **empty** `_headers` is still the package's file and still fails the
-guard. The rules are deliberately scoped to those hostnames rather than applied
+identical for every package — `:project`, `:version` and `:package` are
+Cloudflare's own placeholders, so not even the package name appears in it — and
+the reason it exists is generic too, so each package copying the same rules only
+spread the payload and lost the reasoning with it. The default is written after
+the build and before the guard; a package that emits its own keeps it byte for
+byte, and an **empty** `_headers` is still the package's file and still fails the
+guard.
+
+There are **three** rules, one per family of address a deployment answers on
+besides its canonical path: `<project>.pages.dev`, one
+`<deployment>.<project>.pages.dev` per deployment, and the
+`<package>.<domain-suffix>` custom domain this workflow gives the project. The
+third was missing until HeroicLands/.github#9 — every live package answered 200
+with no `X-Robots-Tag` at its `pkg.heroiclands.org` address, which is the newest
+of the three and the only one a reader is plausibly handed.
+
+The rules are deliberately scoped to those hostnames rather than applied
 globally: under its own domain a copy of the repository stays indexable, and
-only the host-assigned addresses do not. `heroiclands-site`'s router strips
-`X-Robots-Tag` when it proxies, because the hosting cannot tell its request from
-a reader's, so the header reaches the canonical address and is removed there.
+only the host-assigned addresses do not. A placeholder matches **one label** —
+inside a host the delimiter is the dot — so `:package.pkg.heroiclands.org` needs
+four labels and a literal `pkg`, and `www.heroiclands.org` cannot match it. That
+holds only while `domain-suffix` names a dedicated namespace and not the domain
+the canonical site itself is served from.
+
+`heroiclands-site`'s router strips `X-Robots-Tag` when it proxies, because the
+hosting cannot tell its request from a reader's, so the header reaches the
+canonical address and is removed there. **The third rule is the one that depends
+on that strip**, since the custom domain is the origin the router fetches; the
+first two never reach it. The strip is asserted in the router's own suite, which
+gates every pull request there (heroiclands-site#30), and it was live end to end
+until heroiclands-site#26 moved the origin off `*.pages.dev`.
 
 **The mode is read from `package-build.config.yaml`, never passed in**, so the
 guard cannot be told one thing while the build does another. `publish.site` was
