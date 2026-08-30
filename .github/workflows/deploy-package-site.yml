@@ -356,32 +356,77 @@ jobs:
             # that clears its output directory, and anywhere later it is after
             # the check it exists to satisfy.
             #
-            # WHY THESE RULES EXIST. A Pages project answers at host-assigned
-            # addresses — `<project>.pages.dev`, and one
-            # `<deployment>.<project>.pages.dev` per deployment — as well as at
-            # its path on `www.heroiclands.org`. Those addresses are not
-            # advertised, but they serve the same pages, and left alone they are
-            # indexed and compete with the canonical URL.
+            # WHY THESE RULES EXIST. A deployment answers at THREE families of
+            # address besides its canonical path on `www.heroiclands.org`:
+            # `<project>.pages.dev`, one `<deployment>.<project>.pages.dev` per
+            # deployment, and `<package>.<domain-suffix>` — the custom domain
+            # the steps below give the project so the router has an origin to
+            # fetch. None is advertised, all serve the same pages, and left
+            # alone they are indexed and compete with the canonical URL.
+            #
+            # The third rule is not decoration. Verified 2026-08-30, before it
+            # existed: every one of the six live packages answered 200 with NO
+            # `X-Robots-Tag` at `https://<package>.pkg.heroiclands.org/<package>/`
+            # while the same deployment set it correctly at
+            # `<project>.pages.dev` — so the two-rule payload left the newest
+            # address, and the only one a reader could plausibly be handed, fully
+            # indexable (HeroicLands/.github#9).
             #
             # WHY THE RULES ARE SCOPED TO THOSE HOSTNAMES rather than applying
-            # `noindex` globally. `:project` and `:version` are Cloudflare's own
-            # placeholders — a named single-segment wildcard — so these two rules
-            # match `*.pages.dev` and nothing else. That scoping is what keeps a
-            # repository correct if it is taken elsewhere: deployed under its own
-            # domain the site stays indexable, and only the host-assigned
-            # addresses are not. A page that must be `noindex` at EVERY address
-            # says so in the document (`<meta name="robots">`), which is body
-            # content and passes through untouched.
+            # `noindex` globally. `:project`, `:version` and `:package` are
+            # Cloudflare's own placeholders — a named wildcard matching ONE
+            # label, since the delimiter inside a host is the dot — so these
+            # three rules match those hostnames and nothing else. That scoping is
+            # what keeps a repository correct if it is taken elsewhere: deployed
+            # under its own domain the site stays indexable, and only the
+            # host-assigned addresses are not. A page that must be `noindex` at
+            # EVERY address says so in the document (`<meta name="robots">`),
+            # which is body content and passes through untouched.
             #
-            # WHAT BECOMES OF THE HEADER AT THE CANONICAL ADDRESS. The hosting
-            # cannot tell the router's request apart from a reader's — same URL,
-            # same address — so the header reaches `www.heroiclands.org` too, on
-            # pages that are being served canonically and must be indexed.
-            # `heroiclands-site`'s Worker therefore STRIPS `X-Robots-Tag` when it
-            # proxies (`worker/src/router.js`, `canonicalHeaders`); that is
-            # deliberate and tested there, and the only place the two addresses
-            # are distinguishable. So the default's job is to emit exactly the
-            # header the router already knows to strip, which this payload is.
+            # That the placeholder is one label is also what keeps the canonical
+            # address out of the third rule: `:package.pkg.heroiclands.org`
+            # requires four labels and a literal `pkg`, so `www.heroiclands.org`
+            # cannot match it. This holds only while `domain-suffix` names a
+            # DEDICATED namespace rather than the domain the canonical site is
+            # served from — a consumer whose site is `www.example.net` must not
+            # set `domain-suffix: example.net`, which would both match `www` here
+            # and give the router `/www/` as a package prefix.
+            #
+            # WHY `X-Robots-Tag` AND NOT A `Link: rel=canonical` HEADER. `noindex`
+            # is a directive; a canonical link is a consolidation hint a crawler
+            # may decline, and it does not stop the duplicate host being crawled.
+            # A canonical link would also have to NAME the canonical address, and
+            # this workflow deliberately knows no consumer addresses — `project`
+            # and `domain-suffix` are inputs, and the payload below still names
+            # no package and no site. One directive across all three host
+            # families keeps the file a single statement: these host-assigned
+            # addresses are not the canonical one.
+            #
+            # WHAT BECOMES OF THE HEADER AT THE CANONICAL ADDRESS — and this is
+            # the risk the third rule carries that the first two did not. The
+            # hosting cannot tell the router's request apart from a reader's —
+            # same URL, same address — so `X-Robots-Tag` set on the ORIGIN the
+            # router fetches reaches `www.heroiclands.org` too, on pages that are
+            # being served canonically and must be indexed. Every other header
+            # does exactly that: measured at the edge on 2026-08-30, the response
+            # header set at `www.heroiclands.org/<package>/` is the origin's,
+            # verbatim, for all six packages.
+            #
+            # `heroiclands-site`'s Worker is the one component that can tell the
+            # two addresses apart, and it STRIPS `X-Robots-Tag` when it proxies
+            # (`worker/src/router.js`, `canonicalHeaders`) while passing every
+            # other header through. That strip is asserted twice in its suite —
+            # once on the pure function, once end to end through the handler with
+            # an origin that returns `noindex` — and heroiclands-site#30 gates
+            # every pull request there on that suite.
+            #
+            # It has also been live: until heroiclands-site#26 the router's
+            # origins WERE `<project>.pages.dev`, so the first rule below already
+            # set `noindex` on every response the router fetched, and
+            # `www.heroiclands.org` never carried it. #26 moved the origin to
+            # `<package>.<domain-suffix>`, which in the same change opened this
+            # hole and left the strip with nothing to strip. The third rule
+            # restores the arrangement that was already proven in production.
             #
             # This reasoning previously lived in one consumer's build script
             # (`sohl-thalorna`, `utils/build-site-root.mjs`), which this default
@@ -389,6 +434,7 @@ jobs:
             - name: Write the default `_headers` if the build produced none
               env:
                   SITE: ${{ inputs.site-dir }}
+                  SUFFIX: ${{ inputs.domain-suffix }}
               run: |
                   set -euo pipefail
 
@@ -408,11 +454,22 @@ jobs:
                       exit 0
                   }
 
-                  cat > "${SITE}/_headers" <<'HEADERS'
+                  # UNQUOTED delimiter, unlike the rest of this workflow's
+                  # heredocs: `${SUFFIX}` must be substituted, because the origin
+                  # namespace is an input and a default that hardcoded
+                  # `pkg.heroiclands.org` would be wrong for any consumer that
+                  # set it. `$` appears nowhere else in the payload — Cloudflare's
+                  # placeholders are `:name`, not `$name` — so that is the only
+                  # expansion here, and there is no backtick or backslash to
+                  # interpret.
+                  cat > "${SITE}/_headers" <<HEADERS
                   https://:project.pages.dev/*
                     X-Robots-Tag: noindex
 
                   https://:version.:project.pages.dev/*
+                    X-Robots-Tag: noindex
+
+                  https://:package.${SUFFIX}/*
                     X-Robots-Tag: noindex
                   HEADERS
 
@@ -456,17 +513,20 @@ jobs:
                       exit 1
                   }
 
-                  # The project answers at its own host-assigned *.pages.dev
-                  # addresses as well as under www.heroiclands.org, and a second
-                  # indexable address competes with the canonical URL.
-                  # `_headers` marks those hostnames noindex — and Pages reads it
-                  # only at the DEPLOYMENT ROOT, which is why it is checked there
-                  # rather than in the package subtree.
+                  # The project answers at its host-assigned *.pages.dev
+                  # addresses and at its <package>.<domain-suffix> custom domain
+                  # as well as under www.heroiclands.org, and a second indexable
+                  # address competes with the canonical URL. `_headers` marks
+                  # those hostnames noindex — and Pages reads it only at the
+                  # DEPLOYMENT ROOT, which is why it is checked there rather than
+                  # in the package subtree.
                   #
                   # Unchanged by the default written above, and still able to
                   # fail: the default is written only when there is no file at
                   # all, so a package that emitted an EMPTY `_headers` is caught
-                  # here rather than papered over.
+                  # here rather than papered over. A package that emits its OWN
+                  # `_headers` passes this check with whatever it wrote, so it is
+                  # that package's job to cover the custom domain too.
                   test -s "${SITE}/_headers" || {
                       echo "::error::${SITE}/_headers is missing or empty. Without it this" \
                            "deployment is indexable at hostnames that compete with its" \
