@@ -341,6 +341,221 @@ The `@main` reference is deliberate, matching the two composite actions: these
 are org-internal and every caller wants the current one. A package that needs to
 pin can reference a SHA.
 
+## `.github/workflows/release-foundry-package.yml`
+
+Versions a Foundry package with changesets and cuts the GitHub Release that
+Foundry installs from.
+
+```yaml
+# .github/workflows/release.yml — in the package repository
+name: Version and Release
+
+on:
+  push:
+    branches: [main]
+  # Manual recovery: re-runs the decision for a version that is merged and
+  # versioned but never got its release. An existing tag is skipped rather
+  # than duplicated, so running this is safe.
+  workflow_dispatch:
+
+permissions:
+  contents: write # push the version branch, create the tag and Release
+  pull-requests: write # open and update the Version Packages pull request
+
+jobs:
+  release:
+    uses: HeroicLands/.github/.github/workflows/release-foundry-package.yml@main
+    with:
+      package-kind: module
+```
+
+| Input | Default | |
+| --- | --- | --- |
+| `package-kind` | — | `system` or `module`; selects `build/dist/<kind>.zip` and `.json` |
+| `build-script` | `build:noci` | the npm script that builds and verifies the tree |
+| `post-release-script` | `""` | an npm script run after the Release, same job, built tree intact |
+| `node-version` | `24` | |
+
+`permissions` are declared by the **caller**, not here. A reusable workflow
+cannot grant itself more than the caller holds, and one caller — `sohl` —
+needs two more (`id-token: write`, `actions: write`) for what its
+`post-release-script` does. Declaring a fixed block here would have capped
+every caller at the narrowest set.
+
+### The two contracts: two named npm scripts
+
+The workflow runs `npm run <build-script>` and `npm run build:pack-release`,
+and knows nothing about what either does — the same contract
+`deploy-package-site.yml` makes with `build:site`. What it requires is only the
+**output**: `build/dist/<package-kind>.zip` and `build/dist/<package-kind>.json`,
+both non-empty.
+
+`build:pack-release` is fixed rather than an input because all six callers
+spell it the same way. An input for an axis nothing varies on is not
+flexibility; it is a knob that invites divergence, which is the disease being
+treated.
+
+`build-script` **must not begin with its own `npm ci`** — dependencies are
+already installed. That is the whole reason five callers say `build:noci` and
+`sohl` says `build`.
+
+### The standing rule: check every output name against the pinned major
+
+**Every `steps.<id>.outputs.*` reference must be re-checked against the pinned
+major's `action.yml` whenever that pin moves.** This is the defect the whole
+workflow exists to end, and it is worth stating as a rule because nothing
+catches it:
+
+An output name that does not exist resolves to the **empty string**. No error,
+no warning, and `actionlint` is clean — a workflow cannot know an action's
+output names without resolving the action. So
+`if: steps.changesets.outputs.hasChangesets == 'false'` becomes `'' == 'false'`,
+always false; the gated step is skipped forever and the job reports **green**
+while releasing nothing.
+
+`changesets/action` renamed every multi-word output at v2:
+
+| v1 | v2 |
+| --- | --- |
+| `hasChangesets` | `has-changesets` |
+| `publishedPackages` | `published-packages` |
+| `pullRequestNumber` | `pr-number` |
+| `published` | `published` (unchanged) |
+
+One dependency bump introduced that into every copy at once, and it was found
+in three only because someone went looking after noticing it in one
+([#12](https://github.com/HeroicLands/.github/issues/12)). Kebab-case names
+need bracket notation — `outputs['has-changesets']` — because a hyphen inside a
+property name parses as subtraction.
+
+The names above were verified against `changesets/action` at the `v2` tag when
+this workflow was written. Re-verify at the tag, not on the default branch.
+
+### The already-released guard fails closed
+
+Release happens only when **both** hold: no changesets remain (a bump just
+landed) and this version is not already tagged (an ordinary push, a re-run or a
+hand-cut tag must not re-release).
+
+The second half branches on `git ls-remote`'s **exit code**, not on truthiness
+([#13](https://github.com/HeroicLands/.github/issues/13)):
+
+| exit | meaning | what happens |
+| --- | --- | --- |
+| 0 | the tag exists | skip — nothing to release |
+| 2 | no matching ref | release |
+| 128 | the remote could not be reached | **fail the job** |
+
+The obvious `if git ls-remote …; then skip; else release; fi` conflates 2 and
+128, so a transient network or auth failure reads as *this version is untagged*
+and the workflow proceeds to release a version that may already have one. Every
+other guard in the file fails closed; that one failed **open**, and did the
+irreversible thing on failure. stderr is deliberately not redirected — on 128 it
+carries the only explanation.
+
+A second guard covers the other silent direction: the two assets are checked
+non-empty **before** the Release is created. A Release is published the instant
+it exists and is what every installed copy updates from, so a pack script that
+failed quietly would otherwise produce a tag, a Release, and nothing to install.
+
+### What each of the six passes
+
+Note what changes between them: one word, and for one of them a build script
+and a follow-on.
+
+```yaml
+# harn-adventures, sohl-kethira-basic, harn-ensemble, sohl-thalorna
+jobs:
+  release:
+    uses: HeroicLands/.github/.github/workflows/release-foundry-package.yml@main
+    with: { package-kind: module }
+```
+
+```yaml
+# HarnMaster-3-FoundryVTT
+jobs:
+  release:
+    uses: HeroicLands/.github/.github/workflows/release-foundry-package.yml@main
+    with: { package-kind: system }
+```
+
+```yaml
+# Song-of-Heroic-Lands-FoundryVTT — the only caller that is not one line.
+# `build` rather than `build:noci` because sohl's `build` does not reinstall,
+# and a post-release script for the two things only sohl does: publish
+# @heroiclands/sohl-types, and dispatch deploy-sohl.yml so the API half of
+# /sohl/ is rebuilt from the new release tag.
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write # OIDC for npm Trusted Publishing (@heroiclands/sohl-types)
+  actions: write # dispatch deploy-sohl.yml
+jobs:
+  release:
+    uses: HeroicLands/.github/.github/workflows/release-foundry-package.yml@main
+    with:
+      package-kind: system
+      build-script: build
+      post-release-script: release:post
+```
+
+`release:post` is a script `sohl` adds as part of its adoption; `GH_TOKEN` and
+`RELEASE_TAG` are in its environment. Nothing here knows what it contains,
+which is the point — it runs **after** the Release exists, so a package's own
+follow-on work can never be the reason the Release was not cut.
+
+### What is not here: the two npm publishers
+
+`package-build` and `heroiclands-hugo-theme` publish to npm, and their release
+workflows are a different shape — `changesets/action` is given a
+`publish-script` and does the tag, the Release and the `npm publish` itself, so
+there is no decision step, no packaging and no assets. They are not callers of
+this workflow and are not made one by it.
+
+**The question that blocked them is answered, though, and the answer is the
+encouraging one.** npm Trusted Publishing authorizes the workflow that
+*initiates* the run, not the reusable one it calls: npm's own documentation
+notes that with `workflow_call` "validation checks the calling workflow's name
+instead of the workflow that actually contains the publish command". So a
+publisher can move its body into a reusable workflow **without reconfiguring
+its trusted publisher on npm**, provided:
+
+- the caller keeps the filename npm is already configured with (`release.yml`
+  — the file name is load-bearing, and both repositories' workflows already say
+  so at the top); and
+- `id-token: write` is granted in **both** the caller and the called workflow.
+
+That removes the risk [#12](https://github.com/HeroicLands/.github/issues/12)
+flagged as the blocker. Centralising those two is still a separate change with
+its own shape, and it should follow the six, not lead them.
+
+### Adoption order, and the signal that says it worked
+
+One repository at a time, each verified by a **real release**. The failure mode
+of this whole family is silence, so a green run is not the signal — these are:
+
+1. `harn-adventures` — plainest caller, no extras.
+2. `sohl-kethira-basic`.
+3. `harn-ensemble` — also loses a job name that announces it as
+   `sohl-kethira-basic`.
+4. `sohl-thalorna`.
+5. `HarnMaster-3-FoundryVTT` — first `system`, and the first repository where
+   the already-released guard has ever executed at all.
+6. `Song-of-Heroic-Lands-FoundryVTT` — last: the only caller needing extra
+   permissions and a `post-release-script`.
+
+**The success signal is two runs, not one**, because "green while doing
+nothing" is the shape being guarded against:
+
+- The Version Packages pull request merges and the run cuts a `v<version>` tag
+  and a Release carrying both assets, non-empty. The *Decide whether to
+  release* step logs `Version X is untagged — releasing vX`.
+- The **next ordinary push to main** runs green and cuts nothing, with
+  `released` reported as `false`.
+
+Only the pair proves the gate both opens and closes. Move to the next
+repository after both are seen.
+
 ## `SECURITY.md`
 
 The organisation's default security policy, inherited by every repository that
