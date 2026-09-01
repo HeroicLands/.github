@@ -69,9 +69,14 @@ on:
                 description: >-
                     The npm script that builds and verifies the tree. It must
                     NOT begin with its own `npm ci` — dependencies are already
-                    installed — which is why five of the six callers use
-                    `build:noci` and sohl, whose `build` does not reinstall,
-                    passes `build`.
+                    installed by the time it runs — which is why the default is
+                    `build:noci` and not `build`: in all six repositories
+                    `build` is literally `npm ci && npm run build:noci`, so
+                    passing it would install twice. Every caller takes the
+                    default today; the input is the same named-script seam
+                    deploy-package-site.yml makes with `build:site`, kept so a
+                    package whose script is named differently can still call
+                    this.
                 required: false
                 default: build:noci
                 type: string
