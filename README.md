@@ -341,6 +341,71 @@ The `@main` reference is deliberate, matching the two composite actions: these
 are org-internal and every caller wants the current one. A package that needs to
 pin can reference a SHA.
 
+## `SECURITY.md`
+
+The organisation's default security policy, inherited by every repository that
+publishes none of its own. Four repositories had none at all —
+`harn-adventures`, `heroiclands-site`, `package-build` and this one
+([#14](https://github.com/HeroicLands/.github/issues/14)) — and `package-build`
+is the one that mattered most: it executes during every consuming package's
+build and is published to npm, which makes it the organisation's highest-value
+supply-chain target and it had no policy, no chooser entry and no private
+reporting.
+
+**A repository publishing its own keeps it whole.** GitHub does not merge the
+two — the local file wins outright — so a repository with genuinely different
+scope publishes one, and a repository with nothing to add publishes nothing.
+Six do today; the four above inherit this.
+
+### What a default cannot do, and why the chooser is not one
+
+A default file is rendered for many repositories, so **it can name none of
+them**. This one says "this repository's Security tab" rather than linking an
+address, and it carries no relative links — a relative link in a default file
+resolves against *this* repository, not the one displaying it, so
+`.github/ISSUE_REPORTING.md#7` would land here and 404 for every inheritor.
+
+The same limit is why **`.github/ISSUE_TEMPLATE/config.yml` is deliberately not
+defaulted**, even though GitHub supports it as one. Its private-reporting entry
+is a `contact_link` holding a literal URL:
+
+```yaml
+- name: Report a security vulnerability (private)
+  url: https://github.com/HeroicLands/<repo>/security/advisories/new
+```
+
+There is no templating, so a single default would send every repository's
+reporter to whichever repository was hardcoded. **That is the exact bug that
+opened #14** — `harn-ensemble`'s chooser pointed at `sohl-kethira-basic` — so
+defaulting the chooser would institutionalise it rather than fix it. Six
+repositories carry a correct self-referencing entry; the three without one want
+their own, not a shared wrong one.
+
+### The half that is not a file
+
+Private vulnerability reporting is a **repository setting**, so no pull request
+can turn it on and this file does not make the advisory form appear. Nine of the
+ten eligible repositories have it off while six advertise it, which means a
+reporter who follows the instruction finds no form and is left with giving up or
+opening a public issue — the outcome the policy exists to prevent, since every
+repository sets `blank_issues_enabled: false` and the chooser is the only entry
+point.
+
+It can be enabled from the API, one call per repository:
+
+```bash
+for r in sohl-thalorna sohl-kethira-basic heroiclands-hugo-theme \
+         harn-adventures harn-ensemble HarnMaster-3-FoundryVTT \
+         heroiclands-site package-build .github; do
+  gh api --method PUT "repos/HeroicLands/$r/private-vulnerability-reporting"
+done
+```
+
+`content-build` is archived, so it is not eligible and needs no decision;
+`Song-of-Heroic-Lands-FoundryVTT` already has it on. Verify with
+`gh api repos/HeroicLands/<repo>/private-vulnerability-reporting --jq .enabled`,
+which must report `true` for all ten before #14 is done.
+
 ## `actions/labels`
 
 Checks a repository's `.github/labels.yml`, or syncs GitHub's labels to it.
