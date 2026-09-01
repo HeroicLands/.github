@@ -1,0 +1,328 @@
+name: Version and Release
+
+# Version a Foundry package with changesets and cut the GitHub Release that
+# Foundry installs from.
+#
+#   1. A pull request declares its bump as a `.changeset/*.md` file.
+#   2. Merging it to `main` runs this workflow, which opens or updates the
+#      **Version Packages** pull request: the version bump plus the rewritten
+#      CHANGELOG.md. An unreleased state is therefore a pull request sitting in
+#      the queue, not an absence nobody can see.
+#   3. Merging *that* runs this workflow again with no changesets left, so it
+#      builds the package, packages it, and cuts the `v<version>` tag and the
+#      GitHub Release.
+#
+# Six repositories carried near-identical copies of that sequence — sohl,
+# thalorna, kethira, harn-adventures, harn-ensemble and hm3 — differing in a
+# package name, one npm script and one word in two filenames. Copies drift, and
+# this family had already proved it twice over: `changesets/action` renamed
+# every multi-word output at v2 and a stale name broke three of the six at once
+# while every run stayed green (HeroicLands/.github#12), and harn-ensemble's job
+# still announced itself as `sohl-kethira-basic`. So the sequence lives here
+# once and a package calls it.
+#
+# WHAT A PACKAGE STILL OWNS: its build and its packaging. This workflow runs two
+# named npm scripts and knows nothing about what either does.
+#
+# WHAT THIS WORKFLOW OWNS: the runner, the changesets gate, the
+# already-released guard, the changelog extraction, the asset guard and the
+# Release itself. Those are identical for every package and are exactly the
+# parts that must not drift.
+#
+# ---------------------------------------------------------------------------
+# The standing rule this workflow exists to enforce
+# ---------------------------------------------------------------------------
+#
+# EVERY `steps.<id>.outputs.*` REFERENCE MUST BE CHECKED AGAINST THE PINNED
+# MAJOR'S `action.yml` WHENEVER THAT PIN MOVES.
+#
+# An output name that does not exist resolves to the **empty string**. There is
+# no error, no warning, and `actionlint` is clean, because a workflow cannot
+# know an action's output names without resolving the action. So
+# `if: steps.changesets.outputs.hasChangesets == 'false'` becomes `'' ==
+# 'false'` — always false, the gated step is skipped forever, and the job
+# reports success while releasing nothing.
+#
+# changesets/action v2 renamed every multi-word output to kebab-case:
+#
+#   v1 `hasChangesets`     -> v2 `has-changesets`
+#   v1 `publishedPackages` -> v2 `published-packages`
+#   v1 `pullRequestNumber` -> v2 `pr-number`
+#   v1 `published`         -> v2 `published`   (the one that did not move)
+#
+# Kebab-case names need bracket notation — `outputs['has-changesets']` — because
+# a hyphen inside a property name is parsed as subtraction.
+
+on:
+    workflow_call:
+        inputs:
+            package-kind:
+                description: >-
+                    `system` or `module` — what Foundry calls this package. It
+                    selects the release assets, `build/dist/<kind>.zip` and
+                    `build/dist/<kind>.json`, whose names are the same word.
+                    This is the only axis on which the six callers actually
+                    differ in behaviour rather than in wording.
+                required: true
+                type: string
+            build-script:
+                description: >-
+                    The npm script that builds and verifies the tree. It must
+                    NOT begin with its own `npm ci` — dependencies are already
+                    installed — which is why five of the six callers use
+                    `build:noci` and sohl, whose `build` does not reinstall,
+                    passes `build`.
+                required: false
+                default: build:noci
+                type: string
+            post-release-script:
+                description: >-
+                    An optional npm script run after the Release is created,
+                    in the same job, with the built tree still present. This is
+                    the seam for whatever a package does that no other package
+                    does; nothing here knows what it contains. Empty means no
+                    such step. A caller using it must grant the permissions its
+                    script needs — see the README.
+                required: false
+                default: ""
+                type: string
+            node-version:
+                description: >-
+                    Deliberately an input although all six callers pass the
+                    same value: a Node major has to be staged one repository at
+                    a time, and a shared workflow that cannot be lagged forces
+                    the bump on everyone at once.
+                required: false
+                default: "24"
+                type: string
+        outputs:
+            released:
+                description: >-
+                    `true` when this run cut a Release, `false` otherwise. Every
+                    ordinary push to main reports `false` — that is the normal
+                    outcome, not a failure. Gate a follow-on job on this.
+                value: ${{ jobs.release.outputs.released }}
+            version:
+                description: >-
+                    The version in package.json this run considered. Empty when
+                    the run only opened or updated the Version Packages pull
+                    request, since the decision step is skipped in that case.
+                value: ${{ jobs.release.outputs.version }}
+            tag:
+                description: The `v<version>` tag, set only when `released` is true.
+                value: ${{ jobs.release.outputs.tag }}
+
+jobs:
+    release:
+        runs-on: ubuntu-latest
+
+        # Job-level rather than workflow-level: workflow-level `concurrency` in
+        # a called workflow is evaluated in the caller's context and does not
+        # behave the way it reads. Keyed by the calling repository, so six
+        # packages release independently and no package ever races itself onto
+        # the version pull request or the tag.
+        concurrency:
+            group: foundry-package-release-${{ github.repository }}
+            cancel-in-progress: false
+
+        outputs:
+            # Normalized to the literal `true`/`false` rather than passed
+            # through. When no version bump has landed the `decide` step is
+            # skipped, and a skipped step's outputs are the EMPTY STRING — so a
+            # caller writing the natural `needs.release.outputs.released ==
+            # 'false'` would find it false, which is the same shape as the
+            # stale-output-name defect this workflow exists to end.
+            released: ${{ steps.decide.outputs.release == 'true' }}
+            version: ${{ steps.decide.outputs.version }}
+            tag: ${{ steps.decide.outputs.tag }}
+
+        steps:
+            # Rejected here rather than mapped onto the nearest value: a typo
+            # would otherwise name assets that do not exist, and the run would
+            # fail four steps later with a message about a missing file rather
+            # than about the thing that was actually wrong.
+            - name: Check the package kind
+              env:
+                  KIND: ${{ inputs.package-kind }}
+              run: |
+                  case "$KIND" in
+                      system|module) echo "Releasing a Foundry $KIND." ;;
+                      *)
+                          echo "::error::package-kind must be 'system' or 'module', not '$KIND'."
+                          exit 1
+                          ;;
+                  esac
+
+            - name: Checkout code
+              uses: actions/checkout@v7
+              with:
+                  # `changeset version` reads the history to build the
+                  # changelog, and the decision below asks the remote for
+                  # existing tags.
+                  fetch-depth: 0
+
+            - name: Setup Node
+              uses: actions/setup-node@v7
+              with:
+                  node-version: ${{ inputs.node-version }}
+                  cache: npm
+
+            - name: Install dependencies
+              run: npm ci
+
+            # With changesets pending: opens or updates the Version Packages
+            # pull request and stops. With none pending — the state right after
+            # that pull request merges — `has-changesets` is false, which is the
+            # signal that a freshly-versioned commit just landed.
+            #
+            # A package that is `private: true` must declare
+            # `privatePackages.version` in `.changeset/config.json`; without it
+            # changesets 3 versions nothing and reports success.
+            - name: Create or update the Version Packages PR
+              id: changesets
+              uses: changesets/action@v2
+              with:
+                  # The repository's own script, not a second spelling of it.
+                  # `changeset version` rewrites package.json and CHANGELOG.md
+                  # but never the lockfile, so the script is where a repository
+                  # refreshes it and keeps the two agreeing by construction.
+                  #
+                  # It must stay ONE command. This input is tokenized and
+                  # exec'd, never handed to a shell, so a `&&` chain written
+                  # here is read as arguments to the first command. That is
+                  # exactly what broke every release in
+                  # `@heroiclands/content-build` (content-build#74); an npm
+                  # script is the seam that does get a shell.
+                  version-script: npm run changeset:version
+                  commit-message: "chore(release): version packages"
+                  pr-title: "chore(release): version packages"
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+            # Release only when the version pull request has merged: no
+            # changesets remain AND this version has not already been tagged.
+            # Both halves are needed — the first says a bump just landed, the
+            # second keeps an ordinary push, a re-run or a hand-cut tag from
+            # cutting the same release twice.
+            #
+            # See the standing rule at the top of this file for why the output
+            # name is bracketed and kebab-cased.
+            - name: Decide whether to release
+              id: decide
+              if: steps.changesets.outputs['has-changesets'] == 'false'
+              run: |
+                  VERSION=$(node -p "require('./package.json').version")
+                  TAG="v$VERSION"
+                  echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+                  # Branch on the EXIT CODE, not on truthiness
+                  # (HeroicLands/.github#13). `git ls-remote --exit-code` has
+                  # three outcomes and the obvious `if` conflates two of them:
+                  #
+                  #     0   the tag exists
+                  #     2   no matching ref — the tag does not exist
+                  #   128   the remote could not be reached
+                  #
+                  # Under `if ... ; then A; else B; fi` both 2 and 128 take the
+                  # else branch, so a network or auth failure reads as "this
+                  # version is untagged" and the workflow proceeds to release a
+                  # version that may already have one. Every other guard in this
+                  # file fails closed; that one failed OPEN, and did the
+                  # irreversible thing on failure.
+                  #
+                  # stderr is deliberately NOT redirected: on 128 it carries the
+                  # only explanation of what went wrong.
+                  set +e
+                  git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null
+                  status=$?
+                  set -e
+
+                  case "$status" in
+                      0)
+                          echo "Tag $TAG already exists — nothing to release."
+                          echo "release=false" >> "$GITHUB_OUTPUT"
+                          ;;
+                      2)
+                          echo "Version $VERSION is untagged — releasing $TAG."
+                          echo "release=true" >> "$GITHUB_OUTPUT"
+                          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+                          ;;
+                      *)
+                          echo "::error::git ls-remote could not determine whether $TAG exists (exit $status). Refusing to release."
+                          exit 1
+                          ;;
+                  esac
+
+            - name: Build the package
+              if: steps.decide.outputs.release == 'true'
+              run: npm run ${{ inputs.build-script }}
+
+            # Fixed, not an input: all six callers spell it the same way, and an
+            # input for an axis nothing varies on is a knob that only invites
+            # divergence.
+            - name: Package the release
+              if: steps.decide.outputs.release == 'true'
+              run: npm run build:pack-release
+
+            # Written to a file rather than a step output: a version's section
+            # can be very large when many changesets have accumulated between
+            # releases, and passing that much text through an action input
+            # delivers it via the process environment, which the runner refuses
+            # to spawn past a certain size ("Argument list too long").
+            # `body_path` reads the file directly.
+            - name: Read changelog section for this version
+              if: steps.decide.outputs.release == 'true'
+              run: |
+                  mkdir -p build
+                  # Everything between the first "## " heading and the next one,
+                  # excluding the version header itself — the release title
+                  # already shows it.
+                  awk '/^## /{c++; if (c>=2) exit; next} c==1{print}' CHANGELOG.md > build/release-notes.md
+
+            # A Release is published the moment it is created and is what every
+            # installed copy of the package updates from, so an empty one cannot
+            # be taken back. A pack script that failed quietly would otherwise
+            # produce exactly that: a tag, a Release, and nothing to install.
+            # Checked here rather than trusted, in the same spirit as the
+            # completeness guard in deploy-package-site.yml.
+            - name: The assets exist
+              if: steps.decide.outputs.release == 'true'
+              env:
+                  KIND: ${{ inputs.package-kind }}
+              run: |
+                  missing=0
+                  for asset in "build/dist/$KIND.zip" "build/dist/$KIND.json"; do
+                      if [ ! -s "$asset" ]; then
+                          echo "::error::$asset is missing or empty after npm run build:pack-release."
+                          missing=1
+                      fi
+                  done
+                  [ "$missing" -eq 0 ] || exit 1
+                  ls -l "build/dist/$KIND.zip" "build/dist/$KIND.json"
+
+            # Creates the v<version> tag and the GitHub Release, attaching the
+            # two assets Foundry installs and updates from.
+            - name: Create GitHub Release
+              if: steps.decide.outputs.release == 'true'
+              uses: softprops/action-gh-release@v3
+              with:
+                  tag_name: ${{ steps.decide.outputs.tag }}
+                  name: Release ${{ steps.decide.outputs.tag }}
+                  body_path: build/release-notes.md
+                  files: |
+                      build/dist/${{ inputs.package-kind }}.zip
+                      build/dist/${{ inputs.package-kind }}.json
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+            # The escape hatch, run only after the Release exists. One npm
+            # script, contents unknown here — the same contract
+            # deploy-package-site.yml makes with `build:site`. It runs last so
+            # that a package's own follow-on work can never be the reason the
+            # Release was not cut.
+            - name: Post-release
+              if: steps.decide.outputs.release == 'true' && inputs.post-release-script != ''
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  RELEASE_TAG: ${{ steps.decide.outputs.tag }}
+              run: npm run ${{ inputs.post-release-script }}
