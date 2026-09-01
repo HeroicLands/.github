@@ -396,8 +396,17 @@ flexibility; it is a knob that invites divergence, which is the disease being
 treated.
 
 `build-script` **must not begin with its own `npm ci`** — dependencies are
-already installed. That is the whole reason five callers say `build:noci` and
-`sohl` says `build`.
+already installed by the time it runs. That is why the default is `build:noci`
+and not `build`: in all six repositories `build` is literally
+`npm ci && npm run build:noci`, so passing it installs twice.
+
+**Every caller takes the default**, so nothing varies on this axis either. It
+stays an input where `build:pack-release` did not, because it is the same
+named-script seam `deploy-package-site.yml` makes with `build:site` — the
+contract is "one npm script, contents unknown here", and a package whose script
+is named differently should be able to call this without editing it. An input
+that every caller leaves alone is a seam; the one to avoid is an input that
+invites callers to differ where they currently agree.
 
 ### The standing rule: check every output name against the pinned major
 
@@ -480,11 +489,10 @@ jobs:
 ```
 
 ```yaml
-# Song-of-Heroic-Lands-FoundryVTT — the only caller that is not one line.
-# `build` rather than `build:noci` because sohl's `build` does not reinstall,
-# and a post-release script for the two things only sohl does: publish
-# @heroiclands/sohl-types, and dispatch deploy-sohl.yml so the API half of
-# /sohl/ is rebuilt from the new release tag.
+# Song-of-Heroic-Lands-FoundryVTT — the only caller that is not one line, and
+# the difference is the post-release script, not the build. It does the two
+# things only sohl does: publish @heroiclands/sohl-types, and dispatch
+# deploy-sohl.yml so the API half of /sohl/ is rebuilt from the new release tag.
 permissions:
   contents: write
   pull-requests: write
@@ -495,9 +503,12 @@ jobs:
     uses: HeroicLands/.github/.github/workflows/release-foundry-package.yml@main
     with:
       package-kind: system
-      build-script: build
       post-release-script: release:post
 ```
+
+`sohl`'s existing workflow passes `build`, and adopting this drops it — which
+also ends a redundant `npm ci` its release has been running all along, since
+`build` reinstalls on top of the install two steps earlier.
 
 `release:post` is a script `sohl` adds as part of its adoption; `GH_TOKEN` and
 `RELEASE_TAG` are in its environment. Nothing here knows what it contains,
