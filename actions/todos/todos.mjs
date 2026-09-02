@@ -32,9 +32,9 @@
  *
  * Findings are `file:line:column: severity: message`, the form every C-family
  * compiler and ESLint emit, so an error matcher resolves them without being
- * taught the layout. That contract is `@heroiclands/content-build`'s, but it
- * is four fields joined by colons, and an Action that needs a checkout and
- * nothing else should not acquire a build toolchain to write one line.
+ * taught the layout. It is four fields joined by colons, and an Action that
+ * needs a checkout and nothing else should not acquire a build toolchain to
+ * write one line.
  *
  * Writes nothing. Exits non-zero on any marker.
  *

@@ -4,13 +4,11 @@ Shared GitHub configuration for the HeroicLands organisation: Actions every
 repository uses, and community health files GitHub falls back to when a
 repository has none of its own.
 
-Nothing here is published to npm. The two build toolchains —
-[`content-build`](https://github.com/HeroicLands/content-build) and
-[`package-build`](https://github.com/HeroicLands/package-build) — each deliver a
-single command line, and each is scoped by what it *reads*: content-build reads
-the content tree, package-build reads `lang/`, `styles/`, `src/`, the assets and
-the manifest. Repository governance is neither, which is what this repository is
-for.
+Nothing here is published to npm. The build toolchain,
+[`package-build`](https://github.com/HeroicLands/package-build), delivers a
+single command line and is scoped by what it *reads*: the content tree, `lang/`,
+`styles/`, `src/`, the assets and the manifest. Repository governance is none of
+those, which is what this repository is for.
 
 ## `.github/workflows/deploy-package-site.yml`
 
@@ -656,7 +654,6 @@ for r in sohl-thalorna sohl-kethira-basic heroiclands-hugo-theme \
 done
 ```
 
-`content-build` is archived, so it is not eligible and needs no decision;
 `Song-of-Heroic-Lands-FoundryVTT` already has it on. Verify with
 `gh api repos/HeroicLands/<repo>/private-vulnerability-reporting --jq .enabled`,
 which must report `true` for all ten before #14 is done.
@@ -759,10 +756,8 @@ The rule is universal, and only the file selection ever differed between
 repositories — which is why those are inputs and nothing else is. Like the
 label registry, this is repository hygiene rather than a build: it runs in CI,
 it needs no build, and it wants nothing but a checkout. It takes no dependency
-either, not even to format a finding; that contract belongs to
-[`content-build`](https://github.com/HeroicLands/content-build), but it is four
-fields joined by colons, and acquiring a build toolchain to write one line
-would be the wrong trade.
+either, not even to format a finding: it is four fields joined by colons, and
+acquiring a build toolchain to write one line would be the wrong trade.
 
 ## `actions/no-attribution`
 
