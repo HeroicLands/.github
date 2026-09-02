@@ -540,32 +540,61 @@ That removes the risk [#12](https://github.com/HeroicLands/.github/issues/12)
 flagged as the blocker. Centralising those two is still a separate change with
 its own shape, and it should follow the six, not lead them.
 
-### Adoption order, and the signal that says it worked
+### All six have adopted, and how it was proved
 
-One repository at a time, each verified by a **real release**. The failure mode
-of this whole family is silence, so a green run is not the signal — these are:
+Every Foundry package calls this workflow. Roughly 860 lines of duplicated
+release logic are now 287 lines of caller, and five of the six say nothing but
+which word names their assets.
 
-1. `harn-adventures` — plainest caller, no extras.
-2. `sohl-kethira-basic`.
-3. `harn-ensemble` — also loses a job name that announces it as
-   `sohl-kethira-basic`.
-4. `sohl-thalorna`.
-5. `HarnMaster-3-FoundryVTT` — first `system`, and the first repository where
-   the already-released guard has ever executed at all.
-6. `Song-of-Heroic-Lands-FoundryVTT` — last: the only caller needing extra
-   permissions and a `post-release-script`.
+| repository | `package-kind` | caller |
+| --- | --- | --- |
+| `harn-adventures` | `module` | 48 lines |
+| `harn-ensemble` | `module` | 43 lines |
+| `sohl-thalorna` | `module` | 43 lines |
+| `HarnMaster-3-FoundryVTT` | `system` | 46 lines |
+| `sohl-kethira-basic` | `module` | 47 lines |
+| `Song-of-Heroic-Lands-FoundryVTT` | `system` | 60 lines, `post-release-script` |
 
-**The success signal is two runs, not one**, because "green while doing
-nothing" is the shape being guarded against:
+**The order was deliberate and is worth keeping if this is ever done again**:
+`harn-adventures` first because it was the plainest caller, and
+`Song-of-Heroic-Lands-FoundryVTT` last because it is the only one needing extra
+permissions and a follow-on script. Nothing adopted before the release path had
+actually run somewhere.
 
-- The Version Packages pull request merges and the run cuts a `v<version>` tag
-  and a Release carrying both assets, non-empty. The *Decide whether to
-  release* step logs `Version X is untagged — releasing vX`.
-- The **next ordinary push to main** runs green and cuts nothing, with
-  `released` reported as `false`.
+**The success signal was two runs, not one**, because "green while doing
+nothing" is the shape being guarded against, and one green run cannot tell the
+two apart:
 
-Only the pair proves the gate both opens and closes. Move to the next
-repository after both are seen.
+- `harn-adventures` cut **v0.0.1** — its first release ever — with both assets
+  attached, logging `Version 0.0.1 is untagged — releasing v0.0.1`.
+- A re-run then logged `Tag v0.0.1 already exists — nothing to release` and
+  skipped every step below it, leaving exactly one release.
+
+Only the pair proves the gate both opens and closes. That first run is also the
+only one that could prove the stale-output-name defect fixed: with changesets
+pending, a correct `outputs['has-changesets']` and a stale one **both** skip the
+decision step, so only the no-changesets-left case distinguishes them.
+
+**Verify a caller by parsing it, not by reading it.** The check that matters is
+that the job delegates and carries no steps of its own — a half-migrated file
+that still has a `steps:` block would look right at a glance:
+
+```bash
+gh api repos/HeroicLands/<repo>/contents/.github/workflows/release.yml?ref=main \
+  --jq .content | base64 -d | yq '.jobs[] | has("steps")'   # must be false
+```
+
+**What adoption turned up, which was not the point but matters more than it.**
+Verifying that each repository's `build:noci` and `build:pack-release` actually
+run — before pointing its release at them — found that **three of the six had a
+red `build:noci` that no CI job executed**. The release workflow was the only
+thing that ran it, and only at release time, so a release was the first place
+anyone would find out. That is why two of the six have never cut a release at
+all. `sohl-kethira-basic` is fixed; `harn-ensemble` and `sohl-thalorna` are
+tracked in their own repositories and cannot release until they are.
+
+The lesson generalises past this workflow: a gate that only runs at release
+time is not a gate, it is a surprise.
 
 ## `SECURITY.md`
 
