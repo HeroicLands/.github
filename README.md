@@ -4,13 +4,11 @@ Shared GitHub configuration for the HeroicLands organisation: Actions every
 repository uses, and community health files GitHub falls back to when a
 repository has none of its own.
 
-Nothing here is published to npm. The two build toolchains —
-[`content-build`](https://github.com/HeroicLands/content-build) and
-[`package-build`](https://github.com/HeroicLands/package-build) — each deliver a
-single command line, and each is scoped by what it *reads*: content-build reads
-the content tree, package-build reads `lang/`, `styles/`, `src/`, the assets and
-the manifest. Repository governance is neither, which is what this repository is
-for.
+Nothing here is published to npm. The build toolchain,
+[`package-build`](https://github.com/HeroicLands/package-build), delivers a
+single command line and is scoped by what it *reads*: the content tree, `lang/`,
+`styles/`, `src/`, the assets and the manifest. Repository governance is none of
+those, which is what this repository is for.
 
 ## `.github/workflows/deploy-package-site.yml`
 
@@ -161,44 +159,37 @@ message the toolchain gives, rather than mapped onto the nearest mode.
 
 ### The hosting project and the custom domain
 
-Both are created if missing, idempotently, before the upload.
+Both are created if missing, idempotently, before the upload — checked first, so
+a genuine error (a bad token, a revoked scope) still fails the run rather than
+hiding inside a tolerated create.
 
-A Pages project is **account** state, not repository state. Without creating it,
-a clone of a package repository plus a scoped token still could not publish:
-somebody would have to know to visit a dashboard first, and removing exactly
-that hidden step is what makes a package movable. It is checked before it is
-created, so a genuine error — a bad token, a revoked scope — still fails the run
-rather than hiding inside a tolerated create.
-
+A Pages project is **account** state, not repository state, so without creating
+it a clone of a package repository plus a scoped token still could not publish.
 The custom domain is `<package>.<domain-suffix>`, e.g.
-`kethira.pkg.heroiclands.org`. The router derives a package's origin from its
+`kethira.pkg.heroiclands.org`: the router derives a package's origin from that
 prefix alone and holds no list of packages, so adding a package is no edit to
-`heroiclands-site` — but only if the hostname exists, and the only place that
-can be guaranteed is here, beside the project creation. Adding it is idempotent
-by inspection (list, then add if absent) and tolerant on the race (an add that
-lost to a concurrent run is verified, not assumed).
+`heroiclands-site` — but only if the hostname exists.
 
-**Registering the domain is only half of it, and the DNS record is the other
-half.** `POST …/pages/projects/{project}/domains` attaches a hostname to a Pages
-project; it does not write a DNS record, and it answers `success: true` for the
-half it did. The dashboard hides the difference — adding a custom domain by hand
-shows a *Confirm new DNS record* screen and **Activate domain** does both — so
-the gap only surfaced when the first automated deploys ran. Four packages
-deployed green on 2026-08-29 and all four addresses were NXDOMAIN
-([#10](https://github.com/HeroicLands/.github/issues/10)).
+**Registering the domain does not create its DNS record.**
+`POST …/pages/projects/{project}/domains` attaches a hostname and answers
+`success: true` for the half it did; the dashboard hides the difference, because
+**Activate domain** does both. A separate step therefore creates
+`CNAME <package>.pkg → <project>.pages.dev`, **proxied**, since the router
+fetches these hostnames as origins.
 
-So a second step creates the record — `CNAME <package>.pkg → <project>.pages.dev`,
-**proxied**, because the router fetches these hostnames as origins. It is
-idempotent the same way the domain step is (look first, create only what is
-absent) and it is a *separate* step for a specific reason: the domain step
-returns early when the hostname is already registered, which is exactly the
-state this bug leaves behind, so folding the record creation into it would skip
-every package that already has the problem. The zone is resolved by name from
-`domain-suffix` rather than hardcoded, walking the suffix a label at a time
-(`pkg.heroiclands.org` → zone `heroiclands.org`), so a consumer publishing under
-another suffix still works. A record that already exists pointing somewhere else
-is reported as a warning and left alone — this step creates a missing record, it
-does not overwrite deliberate state.
+Two things about that step are load-bearing and should survive any tidying:
+
+- **It stays separate from the domain step.** That step returns early when the
+  hostname is already registered — exactly the state this bug leaves behind — so
+  folding the record creation into it would skip every package that already has
+  the problem.
+- **A record that already exists pointing elsewhere is a warning, not an
+  overwrite.** The step creates what is missing; it does not replace deliberate
+  state.
+
+The zone is resolved by name from `domain-suffix` rather than hardcoded, walking
+the suffix a label at a time (`pkg.heroiclands.org` → zone `heroiclands.org`),
+so a consumer publishing under another suffix still works.
 
 ### Secrets
 
@@ -229,28 +220,16 @@ same failure the completeness guard exists to catch.
 
 ### The six callers
 
-`sohl` and `thalorna` publish content; the other four publish a homepage. Note
-what changes between them: a project name, and — for content packages — a floor.
+One shape, twice parameterised. `sohl` and `thalorna` publish content and so
+state a floor; the other four publish a homepage and cannot.
 
 ```yaml
-# Song-of-Heroic-Lands-FoundryVTT/.github/workflows/deploy-sohl.yml
-# `sohl` also deploys on a new release, because half of what it publishes (the
-# API documentation) tracks the newest release tag rather than `main`.
+# sohl-thalorna/.github/workflows/deploy-site.yml — what all six look like
+name: Deploy the site
 on:
   push: { branches: [main] }
   workflow_dispatch:
 permissions: { contents: read }
-jobs:
-  deploy:
-    uses: HeroicLands/.github/.github/workflows/deploy-package-site.yml@main
-    with: { project: sohl-site, min-pages: 1000 }
-    secrets:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-```
-
-```yaml
-# sohl-thalorna/.github/workflows/deploy-site.yml
 jobs:
   deploy:
     uses: HeroicLands/.github/.github/workflows/deploy-package-site.yml@main
@@ -260,57 +239,22 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 ```
 
-```yaml
-# HarnMaster-3-FoundryVTT/.github/workflows/deploy-site.yml
-jobs:
-  deploy:
-    uses: HeroicLands/.github/.github/workflows/deploy-package-site.yml@main
-    with: { project: hm3-site }
-    secrets:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-```
+| repository | `project` | `min-pages` |
+| --- | --- | --- |
+| `Song-of-Heroic-Lands-FoundryVTT` | `sohl-site` | `1000` |
+| `sohl-thalorna` | `sohl-thalorna` | `1200` |
+| `HarnMaster-3-FoundryVTT` | `hm3-site` | — |
+| `sohl-kethira-basic` | `sohl-kethira-basic` | — |
+| `harn-ensemble` | `harn-ensemble` | — |
+| `harn-adventures` | `harn-adventures` | — |
 
-```yaml
-# sohl-kethira-basic/.github/workflows/deploy-site.yml
-# Homepage-only, and no bound is stated: the guard fixes it at exactly one page
-# and this caller could not raise it if it tried. That is deliberate — the bound
-# is Keléstia's Fan Material Guidelines, not a preference.
-jobs:
-  deploy:
-    uses: HeroicLands/.github/.github/workflows/deploy-package-site.yml@main
-    with: { project: sohl-kethira-basic }
-    secrets:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-```
-
-```yaml
-# harn-ensemble/.github/workflows/deploy-site.yml
-jobs:
-  deploy:
-    uses: HeroicLands/.github/.github/workflows/deploy-package-site.yml@main
-    with: { project: harn-ensemble }
-    secrets:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-```
-
-```yaml
-# harn-adventures/.github/workflows/deploy-site.yml
-jobs:
-  deploy:
-    uses: HeroicLands/.github/.github/workflows/deploy-package-site.yml@main
-    with: { project: harn-adventures }
-    secrets:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-```
+`sohl` is the one exception: its workflow is `deploy-sohl.yml` and it also runs
+on a new release, because half of what it publishes — the API documentation —
+tracks the newest release tag rather than `main`.
 
 The floors are each package's own, taken from a real build with room to spare:
 `sohl`'s knowledgebase compiles ~1,500 pages and `thalorna`'s content tree
-~2,500, so `1000` and `1200` catch a collapse without tripping on ordinary
-editing. Raise a floor when a package grows; never raise one to make a red run
+~2,500. Raise a floor when a package grows; never raise one to make a red run
 green.
 
 Everything else — the package name, the publishing mode, the origin hostname,
@@ -328,18 +272,21 @@ seventh package is a `project:` name and, if it publishes content, a floor.**
 4. Push. The hosting project, the custom domain and its DNS record are created
    on the first run; the router already knows how to reach them.
 
-### Why a reusable workflow and not a composite action
+### Workflow, action, or package
 
-A composite action is a step; this is a whole job — a runner, a checkout, a
-Node and Hugo toolchain, a `concurrency` group and an environment. A composite
-action cannot declare any of those, so every caller would have to restate them,
-which is most of the hundred lines the duplication was made of. `uses:` at the
-job level moves the entire job, which is the unit that was actually being
-copied.
+A composite action is a step; a reusable workflow is a whole job — a runner, a
+checkout, a toolchain, a `concurrency` group, an environment. An action can
+declare none of those, so when the thing being copied is a **job**, `uses:` at
+the job level is what moves it; when it is a **step**, it is an action.
 
-The `@main` reference is deliberate, matching the two composite actions: these
-are org-internal and every caller wants the current one. A package that needs to
-pin can reference a SHA.
+When it is neither — CI code that runs on a push, talks to the GitHub API and
+wants nothing but a token — it is still an action rather than an npm package.
+Minting a package to hold a few hundred lines of `fetch` calls would add a
+release pipeline to maintain, and neither build toolchain is the right home for
+repository governance.
+
+`@main` is deliberate throughout: these are org-internal and every caller wants
+the current one. A caller that needs to pin can reference a SHA.
 
 ## `.github/workflows/release-foundry-package.yml`
 
@@ -469,51 +416,36 @@ failed quietly would otherwise produce a tag, a Release, and nothing to install.
 
 ### What each of the six passes
 
-Note what changes between them: one word, and for one of them a build script
-and a follow-on.
+Five callers are one line. Only `sohl` is not, and the difference is what it
+does *after* the release, not how it builds.
+
+| repository | `package-kind` | also passes |
+| --- | --- | --- |
+| `harn-adventures` | `module` | — |
+| `harn-ensemble` | `module` | — |
+| `sohl-thalorna` | `module` | — |
+| `sohl-kethira-basic` | `module` | — |
+| `HarnMaster-3-FoundryVTT` | `system` | — |
+| `Song-of-Heroic-Lands-FoundryVTT` | `system` | `post-release-script: release:post` |
 
 ```yaml
-# harn-adventures, sohl-kethira-basic, harn-ensemble, sohl-thalorna
+# the five: permissions, then one line
+permissions:
+  contents: write
+  pull-requests: write
 jobs:
   release:
     uses: HeroicLands/.github/.github/workflows/release-foundry-package.yml@main
     with: { package-kind: module }
 ```
 
-```yaml
-# HarnMaster-3-FoundryVTT
-jobs:
-  release:
-    uses: HeroicLands/.github/.github/workflows/release-foundry-package.yml@main
-    with: { package-kind: system }
-```
-
-```yaml
-# Song-of-Heroic-Lands-FoundryVTT — the only caller that is not one line, and
-# the difference is the post-release script, not the build. It does the two
-# things only sohl does: publish @heroiclands/sohl-types, and dispatch
-# deploy-sohl.yml so the API half of /sohl/ is rebuilt from the new release tag.
-permissions:
-  contents: write
-  pull-requests: write
-  id-token: write # OIDC for npm Trusted Publishing (@heroiclands/sohl-types)
-  actions: write # dispatch deploy-sohl.yml
-jobs:
-  release:
-    uses: HeroicLands/.github/.github/workflows/release-foundry-package.yml@main
-    with:
-      package-kind: system
-      post-release-script: release:post
-```
-
-`sohl`'s existing workflow passes `build`, and adopting this drops it — which
-also ends a redundant `npm ci` its release has been running all along, since
-`build` reinstalls on top of the install two steps earlier.
-
-`release:post` is a script `sohl` adds as part of its adoption; `GH_TOKEN` and
-`RELEASE_TAG` are in its environment. Nothing here knows what it contains,
-which is the point — it runs **after** the Release exists, so a package's own
-follow-on work can never be the reason the Release was not cut.
+`sohl` grants two permissions more — `id-token: write` for npm Trusted
+Publishing and `actions: write` to dispatch its site deploy — and its
+`release:post` script does the two things no other package does: republish
+`/sohl/` from the new tag, and publish `@heroiclands/sohl-types`. Nothing here
+knows what that script contains, which is the point; it runs **after** the
+Release, so a package's own follow-on work can never be why the Release was not
+cut.
 
 ### What is not here: the two npm publishers
 
@@ -540,32 +472,25 @@ That removes the risk [#12](https://github.com/HeroicLands/.github/issues/12)
 flagged as the blocker. Centralising those two is still a separate change with
 its own shape, and it should follow the six, not lead them.
 
-### Adoption order, and the signal that says it worked
+### Verifying a caller
 
-One repository at a time, each verified by a **real release**. The failure mode
-of this whole family is silence, so a green run is not the signal — these are:
+Parse it; don't read it. The check that matters is that the job delegates and
+carries no steps of its own — a half-migrated file looks right at a glance.
 
-1. `harn-adventures` — plainest caller, no extras.
-2. `sohl-kethira-basic`.
-3. `harn-ensemble` — also loses a job name that announces it as
-   `sohl-kethira-basic`.
-4. `sohl-thalorna`.
-5. `HarnMaster-3-FoundryVTT` — first `system`, and the first repository where
-   the already-released guard has ever executed at all.
-6. `Song-of-Heroic-Lands-FoundryVTT` — last: the only caller needing extra
-   permissions and a `post-release-script`.
+```bash
+gh api repos/HeroicLands/<repo>/contents/.github/workflows/release.yml?ref=main \
+  --jq .content | base64 -d | yq '.jobs[] | has("steps")'   # must be false
+```
 
-**The success signal is two runs, not one**, because "green while doing
-nothing" is the shape being guarded against:
+Two runs prove a release path, not one, because "green while doing nothing" is
+the shape being guarded against: the release cuts a tag and a Release with both
+assets, **and** the next ordinary push runs green cutting nothing.
 
-- The Version Packages pull request merges and the run cuts a `v<version>` tag
-  and a Release carrying both assets, non-empty. The *Decide whether to
-  release* step logs `Version X is untagged — releasing vX`.
-- The **next ordinary push to main** runs green and cuts nothing, with
-  `released` reported as `false`.
-
-Only the pair proves the gate both opens and closes. Move to the next
-repository after both are seen.
+**A gate that only runs at release time is not a gate.** Migrating the six found
+that three of them had a red `build:noci` no CI job executed — the release
+workflow was the only thing that ran it, so a release was the first place anyone
+would have found out, and two of the six had never cut one. Before pointing new
+automation at a repository's build, run it.
 
 ## `SECURITY.md`
 
@@ -627,7 +552,6 @@ for r in sohl-thalorna sohl-kethira-basic heroiclands-hugo-theme \
 done
 ```
 
-`content-build` is archived, so it is not eligible and needs no decision;
 `Song-of-Heroic-Lands-FoundryVTT` already has it on. Verify with
 `gh api repos/HeroicLands/<repo>/private-vulnerability-reporting --jq .enabled`,
 which must report `true` for all ten before #14 is done.
@@ -681,16 +605,6 @@ Findings are reported as `file:line:column: severity: message`, the form every
 C-family compiler and ESLint emit, so an error matcher resolves them without
 being taught the layout.
 
-### Why this is an Action and not a package
-
-Each repository carried its own `utils/sync-labels.mjs`. They were 95% identical
-and had drifted in all three, because copies do. Neither build toolchain was the
-right home — labels are not content and not a Foundry package — and minting an
-npm package to hold 130 lines of `fetch` calls would have added a release
-pipeline to maintain. What the code actually is, is CI: it runs on a push, it
-talks to the GitHub API, it needs a repository token. So it lives where that is
-ordinary.
-
 ## `actions/todos`
 
 Fails when a committed comment carries a `TODO`/`FIXME` marker.
@@ -730,10 +644,8 @@ The rule is universal, and only the file selection ever differed between
 repositories — which is why those are inputs and nothing else is. Like the
 label registry, this is repository hygiene rather than a build: it runs in CI,
 it needs no build, and it wants nothing but a checkout. It takes no dependency
-either, not even to format a finding; that contract belongs to
-[`content-build`](https://github.com/HeroicLands/content-build), but it is four
-fields joined by colons, and acquiring a build toolchain to write one line
-would be the wrong trade.
+either, not even to format a finding: it is four fields joined by colons, and
+acquiring a build toolchain to write one line would be the wrong trade.
 
 ## `actions/no-attribution`
 
@@ -788,16 +700,8 @@ Nothing is edited. The check reports and fails, and the fix stays a human
 decision — which matters more here than elsewhere, since the thing being removed
 is a claim about who wrote the work.
 
-### Why this is an Action
-
-The same reason as the other two, arrived at from the opposite direction.
-Every repository already had this check, as a 60-line block of `bash` and `gh`
-embedded in a workflow — copied seven times, with the regex, the anchoring
-rationale and the failure message duplicated in each. Nothing about it varies by
-repository, so there was nothing for an input to capture; what there was, was
-seven chances for the pattern to drift and no way to fix it once.
-
-The repositories that also want the rule *before* a commit exists keep a local
-`.githooks/commit-msg` carrying the same pattern. That one cannot move here — a
-git hook runs on a developer's machine, from their checkout — so those two are
-the pair to keep in sync, and the only pair.
+**The git hook is the one copy that cannot move here.** Repositories that also
+want the rule *before* a commit exists keep a local `.githooks/commit-msg`
+carrying the same pattern — a hook runs on a developer's machine, from their
+checkout — so the Action and that hook are the pair to keep in sync, and the
+only pair.

@@ -194,10 +194,11 @@ jobs:
                   #
                   # It must stay ONE command. This input is tokenized and
                   # exec'd, never handed to a shell, so a `&&` chain written
-                  # here is read as arguments to the first command. That is
-                  # exactly what broke every release in
-                  # `@heroiclands/content-build` (content-build#74); an npm
-                  # script is the seam that does get a shell.
+                  # here is read as arguments to the first command —
+                  # `changeset` receives the second command's flags and
+                  # rejects them, which has broken every release in a package
+                  # that tried it. An npm script is the seam that does get a
+                  # shell.
                   version-script: npm run changeset:version
                   commit-message: "chore(release): version packages"
                   pr-title: "chore(release): version packages"
