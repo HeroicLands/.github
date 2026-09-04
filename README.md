@@ -95,8 +95,29 @@ page count.
 | `<pkg>/index.html` | non-empty | non-empty |
 | `<pkg>/404.html` | non-empty | non-empty |
 | `<site-dir>/_headers` | non-empty | non-empty |
+| `<pkg>/homepage-*/index.html` | non-empty, on package-build ≥ 15 | non-empty, on package-build ≥ 15 |
 | pages (`index.html` count) | `min-pages` ≤ n ≤ `max-pages` | **exactly 1** |
 | bounds settable by the caller | yes, and `min-pages` is required | **no** |
+
+**The landing is required, and which file that is depends on the toolchain.**
+Before package-build 15 the landing *was* `<pkg>/index.html`, so losing it
+emptied the package root and the root check caught the collapse. Since
+[package-build#182](https://github.com/HeroicLands/package-build/issues/182)
+the landing is an addressed note at `<pkg>/homepage-<shortcode>/` and Hugo
+writes the site root regardless — so a build that emitted **no landing at all**
+leaves one `index.html`, tallies one page, passes every other check, and
+replaces the live site with chrome around an empty `<main>`
+([#21](https://github.com/HeroicLands/.github/issues/21)).
+
+The two shapes are identical on disk, so the guard asks the **installed**
+`@heroiclands/package-build` — a fact about the tree that was actually built,
+readable after `npm ci` — rather than the declared range, which is a claim:
+`>=9.0.0` permits 15 while the lockfile pins 9, and reading permission as
+resolution would refuse a legitimate old-shape build. From 15 on, no landing is
+a collapsed build and is refused; below 15 the root is the landing and is
+counted as it always was. A version that cannot be read is refused too — the
+question only arises once the landing is already missing. When every caller is
+on 15 the branch goes, along with the discount's condition.
 
 **Homepage-only is the stricter check, not the absent one.** It is two-sided: a
 build that emitted nothing fails, and so does a build that emitted more than the
