@@ -435,6 +435,69 @@ non-empty **before** the Release is created. A Release is published the instant
 it exists and is what every installed copy updates from, so a pack script that
 failed quietly would otherwise produce a tag, a Release, and nothing to install.
 
+### Patch releases are prereleases
+
+**A version `X.Y.Z` with `Z` non-zero publishes as a GitHub prerelease; `X.Y.0`
+publishes as a normal release and takes "Latest".** No exceptions, no
+per-package opt-in — it is org-wide, and it applies to future releases only.
+Published releases are history and are never relabelled.
+
+The digits carry a release **channel** here, not a severity:
+
+| bump | channel |
+| --- | --- |
+| `major` / `minor` | goes to users — a real release |
+| `patch` | beta only, never meant to be consumed |
+
+`0.9.1`, `0.9.2`, … accumulate toward the next user release, which one `minor`
+then cuts as `0.10.0`.
+
+The channel lives in the digits rather than in a semver prerelease component
+because Foundry has to sort these. Foundry's own versions are `<major>.<build>`
+and its `isNewerVersion` is a naive dot-split with a string fallback — it has no
+notion of `-beta.0`, so `0.9.0-beta.0` would sort wrongly against `0.9.0`. A
+numeric-only scheme sorts correctly; what it cannot do on its own is *say* which
+channel a version is on. The GitHub label is what says that to a human.
+
+The decision is keyed on the `version` the `decide` step already reads from
+`package.json`, not on the tag string — the tag is that same value with a `v`
+glued on, and re-parsing it would make the rule depend on the tag spelling.
+
+`prerelease` and `make_latest` are set **together and always explicitly**, both
+verified against `softprops/action-gh-release`'s `action.yml` at the `v3` tag
+per the standing rule above. Both defaults are wrong for this family: the action
+defaults `prerelease` to false and GitHub defaults `make_latest` to true, so an
+unlabelled patch would be published as the current release *and* would take the
+Latest badge off the last real one. Labelling the prerelease while leaving
+Latest to the default fixes only half of it — a prerelease that still claims
+Latest defeats the point.
+
+| version | `prerelease` | `make_latest` | published as |
+| --- | --- | --- | --- |
+| `0.9.0` | `false` | `true` | release, Latest |
+| `0.9.1` | `true` | `false` | prerelease |
+| `0.10.0` | `false` | `true` | release, Latest |
+| `1.0.0` | `false` | `true` | release, Latest |
+| `0.0.1` | `true` | `false` | prerelease |
+| `0.5.3` | `true` | `false` | prerelease |
+| `1.2.3.4`, `1.0.0-beta.1`, `0.9`, `01.2.3`, `v0.9.1`, … | — | — | **the run fails** |
+
+The parse is strict — exactly three dot-separated numeric components, no leading
+zeros — and it **fails closed**, like every other guard in the file. A version
+this rule cannot classify stops the run rather than falling through to
+"release", because "release" is the outcome with consequences: it is published
+the instant it exists, it takes the Latest badge, and every installed copy
+updates from it. An unclassifiable shape must not be resolved by guessing the
+irreversible answer. It also catches the specific mistake this scheme invites —
+a `1.0.0-beta.1` written by someone reaching for changesets' prerelease mode,
+which is exactly the spelling Foundry mis-sorts.
+
+**Blast radius.** Packages that already shipped patch releases as ordinary
+releases — `sohl-kethira-basic` (v0.5.1, v0.5.2, v0.5.3) and `harn-adventures`
+(v0.0.1) — will publish their **next** patch release as a prerelease. That is
+the intended consequence of an org-wide rule, not a regression, and nothing
+already published changes.
+
 ### What each of the six passes
 
 Five callers are one line. Only `sohl` is not, and the difference is what it

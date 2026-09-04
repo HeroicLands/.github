@@ -25,9 +25,13 @@ name: Version and Release
 # named npm scripts and knows nothing about what either does.
 #
 # WHAT THIS WORKFLOW OWNS: the runner, the changesets gate, the
-# already-released guard, the changelog extraction, the asset guard and the
-# Release itself. Those are identical for every package and are exactly the
-# parts that must not drift.
+# already-released guard, the changelog extraction, the asset guard, the
+# release channel a version is labelled with, and the Release itself. Those are
+# identical for every package and are exactly the parts that must not drift.
+#
+# The channel is org-wide rather than a per-package opt-in: PATCH RELEASES ARE
+# PRERELEASES, no exceptions. See the decide step for why the channel lives in
+# the digits.
 #
 # ---------------------------------------------------------------------------
 # The standing rule this workflow exists to enforce
@@ -221,6 +225,58 @@ jobs:
                   TAG="v$VERSION"
                   echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+                  # ----------------------------------------------------------
+                  # Which channel this version is on
+                  # ----------------------------------------------------------
+                  #
+                  # PATCH RELEASES ARE PRERELEASES. No exceptions. Only major
+                  # and minor releases are marked release.
+                  #
+                  # The digits carry a release CHANNEL here, not a severity:
+                  # `minor`/`major` goes to users, `patch` is beta and is never
+                  # meant to be consumed. 0.9.1, 0.9.2 … accumulate toward the
+                  # next user release, which one `minor` then cuts as 0.10.0.
+                  #
+                  # The channel lives in the digits rather than in a semver
+                  # prerelease component because Foundry has to sort these:
+                  # its versions are <major>.<build> and `isNewerVersion` is a
+                  # naive dot-split with a string fallback, so it has no notion
+                  # of `-beta.0` and would sort 0.9.0-beta.0 wrongly against
+                  # 0.9.0. A numeric-only scheme sorts correctly; what it
+                  # cannot do on its own is SAY which channel a version is on.
+                  # The GitHub label is what says that to a human.
+                  #
+                  # Keyed on $VERSION — the value read from package.json two
+                  # lines above — rather than on $TAG. The tag is that same
+                  # value with a `v` glued on; re-parsing it would mean
+                  # stripping a prefix this step added itself, and would make
+                  # the rule depend on the tag spelling instead of on the
+                  # version.
+                  #
+                  # STRICT, and it fails closed. Exactly three dot-separated
+                  # numeric components, no leading zeros, nothing else — so a
+                  # four-part version, a `-beta.1` suffix or any other shape
+                  # STOPS the run rather than falling through to "release".
+                  # "Release" is the outcome with consequences: it is published
+                  # the instant it exists, it takes the Latest badge, and every
+                  # installed copy updates from it. A shape this rule cannot
+                  # classify must not be resolved by guessing the irreversible
+                  # answer.
+                  if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+                      echo "::error::Version '$VERSION' is not X.Y.Z. This workflow reads the patch digit as a release channel and refuses to guess; fix package.json (or the changeset that produced it) and re-run."
+                      exit 1
+                  fi
+
+                  if [ "${BASH_REMATCH[3]}" = "0" ]; then
+                      echo "$VERSION is a minor or major release — publishing as a release, marked latest."
+                      echo "prerelease=false" >> "$GITHUB_OUTPUT"
+                      echo "make_latest=true" >> "$GITHUB_OUTPUT"
+                  else
+                      echo "$VERSION is a patch release — publishing as a prerelease, not marked latest."
+                      echo "prerelease=true" >> "$GITHUB_OUTPUT"
+                      echo "make_latest=false" >> "$GITHUB_OUTPUT"
+                  fi
+
                   # Branch on the EXIT CODE, not on truthiness
                   # (HeroicLands/.github#13). `git ls-remote --exit-code` has
                   # three outcomes and the obvious `if` conflates two of them:
@@ -308,6 +364,23 @@ jobs:
 
             # Creates the v<version> tag and the GitHub Release, attaching the
             # two assets Foundry installs and updates from.
+            #
+            # `prerelease` and `make_latest` are set together and always
+            # explicitly. Both defaults are wrong for this family: the action
+            # defaults `prerelease` to false, and GitHub defaults `make_latest`
+            # to true, so an unlabelled patch release would be published as the
+            # current one AND would take the Latest badge off the last real
+            # release. Marking the prerelease while leaving Latest to the
+            # default would fix only half of it — a prerelease that still
+            # claims Latest defeats the point.
+            #
+            # Both names verified against softprops/action-gh-release's
+            # `action.yml` at the `v3` tag, per the standing rule at the top of
+            # this file. `prerelease` is read as the string `true`; anything
+            # else is false. `make_latest` accepts exactly `true`, `false` or
+            # `legacy` and is ignored otherwise, which is why the decide step
+            # emits those literals rather than a `${{ … && … || … }}` ternary
+            # over `prerelease`.
             - name: Create GitHub Release
               if: steps.decide.outputs.release == 'true'
               uses: softprops/action-gh-release@v3
@@ -315,6 +388,8 @@ jobs:
                   tag_name: ${{ steps.decide.outputs.tag }}
                   name: Release ${{ steps.decide.outputs.tag }}
                   body_path: build/release-notes.md
+                  prerelease: ${{ steps.decide.outputs.prerelease }}
+                  make_latest: ${{ steps.decide.outputs.make_latest }}
                   files: |
                       build/dist/${{ inputs.package-kind }}.zip
                       build/dist/${{ inputs.package-kind }}.json
