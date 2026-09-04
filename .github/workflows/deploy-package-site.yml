@@ -73,6 +73,13 @@
 # not a preference. A boundary a caller could widen with an input is not a
 # boundary.
 #
+# A PAGE IS PUBLISHED MATERIAL, NOT AN `index.html`. Since package-build 15
+# (HeroicLands/package-build#182) a package's landing is an addressed note at
+# `/<package>/homepage-<shortcode>/`, and Hugo generates a site root at
+# `/<package>/` beside it — an empty `<main>`, authored by nobody, redirected
+# past in production. That file is discounted from the tally in both modes; the
+# guard's own reasoning is at the counting step.
+#
 # The mode is READ FROM `package-build.config.yaml`, never passed in, so it is
 # the same value the toolchain builds from and the two cannot come to disagree
 # about what a package publishes.
@@ -120,11 +127,14 @@ on:
             min-pages:
                 description: >-
                     Fewest pages a complete build of this package emits, counted
-                    as `index.html` files under the package prefix. REQUIRED in
-                    `content` mode and REJECTED in `homepage` mode, where the
-                    count is fixed at exactly one. Set it below the real figure
-                    with room for growth, not at it: it is a floor that catches
-                    a collapsed build, not an assertion about today's page count.
+                    as `index.html` files under the package prefix — less the
+                    site root Hugo generates at `/<package>/` once a package's
+                    landing has an address of its own, which is nobody's page.
+                    REQUIRED in `content` mode and REJECTED in `homepage`
+                    mode, where the count is fixed at exactly one. Set it below
+                    the real figure with room for growth, not at it: it is a
+                    floor that catches a collapsed build, not an assertion about
+                    today's page count.
                 required: false
                 default: 0
                 type: number
@@ -497,7 +507,21 @@ jobs:
                       exit 1
                   }
 
-                  # The home page. Its absence is the collapsed-build signature.
+                  # The deployment root answers. Its absence is the
+                  # collapsed-build signature.
+                  #
+                  # NOT "the home page", and no longer the landing: since
+                  # package-build 15 (HeroicLands/package-build#182) a package's
+                  # landing is an ordinary addressed note published at
+                  # `<dir>/homepage-<shortcode>/`, and this file is the site root
+                  # Hugo generates whether or not anything was authored for it —
+                  # chrome, with an empty `<main>`, and shadowed in production by
+                  # the `/<package>/` redirect a package authors in `_redirects`.
+                  # It is still a file that must exist and must not be empty (a
+                  # build that emitted nothing has no root either), which is why
+                  # this check stays — but it is an assertion that the root is
+                  # real, not that the landing is there. The tally below is where
+                  # published pages are counted, and it discounts this file.
                   test -s "${dir}/index.html" || {
                       echo "::error::${dir}/index.html is missing or empty."
                       exit 1
@@ -535,8 +559,66 @@ jobs:
                       exit 1
                   }
 
-                  pages=$(find "$dir" -name index.html | wc -l | tr -d ' ')
-                  echo "${dir} carries ${pages} page(s)."
+                  # THE TALLY COUNTS PUBLISHED PAGES, NOT index.html FILES.
+                  #
+                  # The two were the same thing until package-build 15
+                  # (HeroicLands/package-build#182). A package's landing used to
+                  # be written to `_index.md` at the package root, so Hugo's site
+                  # root and the landing were one file and the bound of one held
+                  # over both readings. #182 gave the landing an address like
+                  # every other note — `<dir>/homepage-<shortcode>/index.html` —
+                  # and Hugo went on generating a site root beside it. That root
+                  # is not a page this package publishes: its `<main>` is empty,
+                  # nothing in the toolchain writes it, and the `_redirects`
+                  # entry a package authors sends `/<package>/` to the landing.
+                  # Counting
+                  # it failed `kethira` on every push from the day it took
+                  # package-build 15.
+                  #
+                  # So the file is discounted — in BOTH modes, because "a page"
+                  # has to mean one thing here. No content-mode caller exists
+                  # today (the two content packages still deploy from their own
+                  # workflows), so no declared `min-pages` moves; when one
+                  # arrives it declares a floor against the same reading the
+                  # homepage bound uses, and a floor is set below the real figure
+                  # anyway.
+                  #
+                  # DISCOUNTED ONLY WHEN THE ADDRESSED LANDING IS THERE, never on
+                  # a bare count. Three callers still build the pre-#182 shape,
+                  # where `<dir>/index.html` IS the landing and subtracting it
+                  # would tally zero and fail every one of them. Keying on the
+                  # landing's presence also keeps the licensing bound intact in
+                  # both shapes: a homepage-only package that published one real
+                  # extra page tallies two either way, because the extra page
+                  # never displaces the discount. Keying on "more than one file"
+                  # would have let exactly that case through.
+                  #
+                  # Matched as `homepage-*` rather than the conventional
+                  # `homepage-root`: the shortcode is the author's
+                  # (`HOMEPAGE_SHORTCODE` is documented as a convention), while
+                  # the `homepage-` prefix is the type's and is not. Nothing
+                  # pre-#182 can produce such a directory — `shortcode` was a
+                  # refused field on a homepage note — so this cannot misread an
+                  # old tree. Once every caller is on package-build >= 15, drop
+                  # the branch, count `find "$dir" -mindepth 2 -name index.html`,
+                  # and require the landing to exist (#21 — with the branch here,
+                  # a homepage-mode build that emitted no landing at all is
+                  # indistinguishable from a pre-#182 tree and still tallies one).
+                  landing=""
+                  for candidate in "${dir}"/homepage-*/index.html; do
+                      if [ -f "$candidate" ]; then landing="$candidate"; break; fi
+                  done
+
+                  files=$(find "$dir" -name index.html | wc -l | tr -d ' ')
+                  pages="$files"
+                  if [ -n "$landing" ]; then
+                      pages=$((files - 1))
+                      echo "${dir} carries ${files} index.html file(s); ${pages} page(s)." \
+                           "Discounting ${dir}/index.html — Hugo's site root, not a published" \
+                           "page; this package's landing is ${landing}."
+                  else
+                      echo "${dir} carries ${pages} page(s)."
+                  fi
 
                   if [ "$pages" -lt "$MIN" ]; then
                       echo "::error::${dir} carries ${pages} page(s), fewer than the ${MIN} a" \
@@ -546,11 +628,16 @@ jobs:
                   fi
                   if [ "$MAX" -gt 0 ] && [ "$pages" -gt "$MAX" ]; then
                       if [ "$MODE" = "homepage" ]; then
+                          hint=""
+                          if [ -n "$landing" ]; then
+                              hint=" Hugo's own site root at ${dir}/index.html is not one of them:"
+                              hint="${hint} it is already discounted."
+                          fi
                           echo "::error::${dir} carries ${pages} page(s). A homepage-only package" \
                                "publishes exactly one: this package's licence covers the module," \
                                "not the publication of its content. Find what is emitting the" \
                                "extra pages — a taxonomy, a section landing, a content tree the" \
-                               "build still walks — rather than raising the bound."
+                               "build still walks — rather than raising the bound.${hint}"
                       else
                           echo "::error::${dir} carries ${pages} page(s), more than the ${MAX}" \
                                "this package declares."
