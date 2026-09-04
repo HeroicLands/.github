@@ -80,6 +80,15 @@
 # past in production. That file is discounted from the tally in both modes; the
 # guard's own reasoning is at the counting step.
 #
+# WHICH ALSO MEANS THE LANDING IS NO LONGER PROVEN BY THE ROOT. Losing it used
+# to empty `/<package>/index.html`; now Hugo writes that file regardless, so a
+# build that emitted NO landing tallies one page and passes (#21). The guard
+# therefore requires the addressed landing — of the callers whose toolchain
+# publishes one. Which those are is not a property of the tree (the two shapes
+# are identical on disk) but of the package-build INSTALLED in the checkout, so
+# that is what the guard reads. Three callers still build the pre-#182 shape and
+# are counted as they always were.
+#
 # The mode is READ FROM `package-build.config.yaml`, never passed in, so it is
 # the same value the toolchain builds from and the two cannot come to disagree
 # about what a package publishes.
@@ -600,14 +609,101 @@ jobs:
                   # pre-#182 can produce such a directory — `shortcode` was a
                   # refused field on a homepage note — so this cannot misread an
                   # old tree. Once every caller is on package-build >= 15, drop
-                  # the branch, count `find "$dir" -mindepth 2 -name index.html`,
-                  # and require the landing to exist (#21 — with the branch here,
-                  # a homepage-mode build that emitted no landing at all is
-                  # indistinguishable from a pre-#182 tree and still tallies one).
+                  # the branch below, count
+                  # `find "$dir" -mindepth 2 -name index.html`, and require the
+                  # landing unconditionally (#21).
+                  #
+                  # `-s` rather than `-f`: an empty landing is a collapsed
+                  # landing, and what is being looked for is a published page.
                   landing=""
                   for candidate in "${dir}"/homepage-*/index.html; do
-                      if [ -f "$candidate" ]; then landing="$candidate"; break; fi
+                      if [ -s "$candidate" ]; then landing="$candidate"; break; fi
                   done
+
+                  # NO LANDING IS EITHER A PRE-#182 TREE OR A COLLAPSED ONE, AND
+                  # THE TREE ALONE CANNOT SAY WHICH.
+                  #
+                  # Before #182 the landing WAS `<dir>/index.html`, so losing it
+                  # emptied the package root and the root check above caught the
+                  # collapse. After #182 Hugo generates that root regardless, so
+                  # a build that wrote no landing at all still leaves one
+                  # `index.html`, tallies one page, passes every check here, and
+                  # replaces the live site with chrome around an empty `<main>`
+                  # (#21). The two trees are identical on disk; only the
+                  # toolchain that produced them differs.
+                  #
+                  # So ask the toolchain. `npm ci` has already run, which makes
+                  # the INSTALLED package-build — the one that actually built
+                  # this tree — a fact readable from the checkout. From 15 on, a
+                  # build with no landing is a collapsed build and is refused;
+                  # below 15 the root IS the landing and the tree is counted as
+                  # it always was.
+                  #
+                  # THE INSTALLED VERSION, NOT THE DECLARED RANGE. A range is a
+                  # claim about what MAY be resolved, and permission is not
+                  # resolution: `>=9.0.0` permits 15 while the lockfile pins 9,
+                  # and reading that range as new-shape would refuse a
+                  # legitimate old-shape build — the one outcome this must not
+                  # produce. It would also put semver-range comparison
+                  # (`9 || 15`, `*`, a tag) into shell to answer a question the
+                  # resolved version answers with a string compare.
+                  #
+                  # UNREADABLE IS REFUSED, like every other guard in this file.
+                  # The version is only consulted when the landing is already
+                  # missing, so the tree is under suspicion by the time this
+                  # runs; "which shape is this?" going unanswered is not a
+                  # reason to deploy it.
+                  if [ -z "$landing" ]; then
+                      # The path `npm ci` installs a direct dependency to. The
+                      # find is the fallback for a hoisted or workspace layout,
+                      # not the primary: it must not pick a nested copy over the
+                      # top-level one.
+                      pbmanifest="node_modules/@heroiclands/package-build/package.json"
+                      if [ ! -f "$pbmanifest" ]; then
+                          pbmanifest=$(find node_modules -path '*/@heroiclands/package-build/package.json' -print 2>/dev/null | head -n 1 || true)
+                      fi
+
+                      pbver=""
+                      if [ -n "$pbmanifest" ] && [ -f "$pbmanifest" ]; then
+                          # Node rather than `yq -p json`: it is guaranteed by
+                          # the setup step above, and reading the file as a path
+                          # sidesteps both shell quoting and the package's own
+                          # `exports` map.
+                          pbver=$(node -e 'const fs=require("fs");try{process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).version||""))}catch(e){}' "$pbmanifest" || true)
+                      fi
+
+                      pbmajor="${pbver%%.*}"
+                      case "$pbmajor" in ""|*[!0-9]*) pbmajor="" ;; esac
+
+                      if [ -z "$pbmajor" ]; then
+                          echo "::error::${dir} carries no landing at ${dir}/homepage-*/index.html," \
+                               "and the package-build that produced it could not be read from" \
+                               "node_modules/@heroiclands/package-build/package.json. From" \
+                               "package-build 15 a tree in that state is a build that emitted no" \
+                               "landing, which deploys as a blank page; below 15 it is the normal" \
+                               "shape. Refusing rather than guessing."
+                          exit 1
+                      fi
+
+                      # 15 is the release that gave the landing an address
+                      # (HeroicLands/package-build#182). Anything from there on
+                      # publishes one, in either mode.
+                      if [ "$pbmajor" -ge 15 ]; then
+                          echo "::error::${dir} carries no landing at ${dir}/homepage-*/index.html," \
+                               "but this tree was built with package-build ${pbver}, which" \
+                               "publishes a package's landing at an address of its own" \
+                               "(HeroicLands/package-build#182). The build emitted no landing." \
+                               "Hugo generates ${dir}/index.html either way, so what is here is" \
+                               "chrome around an empty <main> and deploying it would replace the" \
+                               "live site with a blank page. Find out why the landing was not" \
+                               "written; do not raise or bypass this."
+                          exit 1
+                      fi
+
+                      echo "${dir} carries no addressed landing, and package-build ${pbver} does" \
+                           "not publish one: ${dir}/index.html is this package's landing" \
+                           "(pre-HeroicLands/package-build#182 shape) and is counted as a page."
+                  fi
 
                   files=$(find "$dir" -name index.html | wc -l | tr -d ' ')
                   pages="$files"
