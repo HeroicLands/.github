@@ -54,16 +54,19 @@
 # derived from the package's publishing mode rather than configured per call:
 #
 #   publish.site: content   index.html and 404.html non-empty, `_headers` at the
-#                           deployment root, and `min-pages` <= pages
-#                           <= `max-pages` (no ceiling when unset). `min-pages`
-#                           is REQUIRED — a content package that states no floor
-#                           has no guard, and a guard that cannot fail is not one.
+#                           deployment root, `_redirects` there sending
+#                           `/<package>/` to the landing, and `min-pages` <=
+#                           pages <= `max-pages` (no ceiling when unset).
+#                           `min-pages` is REQUIRED — a content package that
+#                           states no floor has no guard, and a guard that
+#                           cannot fail is not one.
 #
-#   publish.site: homepage  index.html and 404.html non-empty, `_headers` at the
-#                           deployment root, and EXACTLY ONE page. Not a relaxed
-#                           check — a stricter one, and a two-sided one: a build
-#                           that emitted nothing fails, and so does a build that
-#                           emitted more than the homepage.
+#   publish.site: homepage  index.html and 404.html non-empty, `_headers` and
+#                           `_redirects` at the deployment root, and EXACTLY ONE
+#                           page. Not a relaxed check — a stricter one, and a
+#                           two-sided one: a build that emitted nothing fails,
+#                           and so does a build that emitted more than the
+#                           homepage.
 #
 # The homepage bounds are FIXED AT ONE and the caller cannot move them: passing
 # `min-pages` or `max-pages` in homepage mode fails the run. `kethira` and
@@ -88,6 +91,16 @@
 # are identical on disk) but of the package-build INSTALLED in the checkout, so
 # that is what the guard reads. Three callers still build the pre-#182 shape and
 # are counted as they always were.
+#
+# AND A LANDING IS NOT REACHED BY BEING PRESENT. #182 split the page from its
+# address as well as moving it: `/<package>/` — the canonical address, the one
+# every link points at and the one the site router proxies — is Hugo's empty
+# root until the package redirects it. So a build can emit a perfect landing,
+# satisfy everything above, and still serve a blank page at the address the
+# package is known by (#24). The guard requires that redirect too, of the same
+# callers on the same signal, and cannot default it the way it defaults
+# `_headers`: its destination is the landing's own address, which is the
+# package's to state and not this workflow's to guess.
 #
 # The mode is READ FROM `package-build.config.yaml`, never passed in, so it is
 # the same value the toolchain builds from and the two cannot come to disagree
@@ -703,6 +716,92 @@ jobs:
                       echo "${dir} carries no addressed landing, and package-build ${pbver} does" \
                            "not publish one: ${dir}/index.html is this package's landing" \
                            "(pre-HeroicLands/package-build#182 shape) and is counted as a page."
+                  fi
+
+                  # A LANDING NOTHING ROUTES TO IS THE SAME BLANK PAGE (#24).
+                  #
+                  # #182 split the page from its address as well as moving it.
+                  # `/<package>/` — the canonical address, the one every link
+                  # points at and the one the site router proxies — is served by
+                  # Hugo's site root unless the package redirects it, so a build
+                  # can emit a perfect landing, pass every check above, and
+                  # still replace the live site with an empty `<main>`.
+                  # `sohl-kethira-basic` shipped exactly that: it was noticed by
+                  # eye and fixed by hand (HeroicLands/sohl-kethira-basic#83),
+                  # with every check in this file green.
+                  #
+                  # `MIGRATING.md` section 3 of package-build 15 specifies the
+                  # redirect each package authors. Nothing enforced it; this
+                  # does.
+                  #
+                  # A GUARD, NOT A FALLBACK — unlike `_headers` above, which is
+                  # written for a build that emitted none. The destination here
+                  # is the landing's own address, which is package-specific, so
+                  # there is no generic file this workflow could write instead.
+                  #
+                  # KEYED ON THE LANDING, which by this point IS the new-shape
+                  # signal: a post-#182 tree carrying no landing has already
+                  # been refused above, so an empty `landing` here is a pre-#182
+                  # caller. Those three serve their landing at `/<package>/`
+                  # itself and correctly author no `_redirects`, which is why
+                  # this cannot be asked of every caller.
+                  #
+                  # BOTH PATH FORMS. Pages matches a rule against the raw
+                  # `url.pathname`, before any trailing-slash handling, so
+                  # `/<package>` and `/<package>/` are distinct keys and a rule
+                  # for one of them leaves the other on the blank root.
+                  #
+                  # THE STATUS COLUMN IS NOT READ. Every value a package would
+                  # plausibly write there arrives at the landing — 301, 302, or
+                  # a 200 rewrite — and what this guard exists to catch is a
+                  # rule that is absent, not one that is misnumbered. Rules are
+                  # matched exactly, which is the form the migration specifies
+                  # and the form every package writes.
+                  if [ -n "$landing" ]; then
+                      # Derived from the landing that was actually found, never
+                      # assumed: the shortcode is the author's, so a package
+                      # that named its homepage note something else is measured
+                      # against its own address.
+                      landing_rel="${landing#"$SITE"/}"
+                      landing_url="/${landing_rel%index.html}"
+
+                      test -s "${SITE}/_redirects" || {
+                          echo "::error::${SITE}/_redirects is missing or empty, so nothing sends" \
+                               "/${PKG}/ to this package's landing at ${landing_url}. Since" \
+                               "package-build 15 (HeroicLands/package-build#182) the landing has an" \
+                               "address of its own and /${PKG}/ is Hugo's site root — chrome around" \
+                               "an empty <main> — so deploying this would serve a blank page at the" \
+                               "address the package is known by. Write both forms (MIGRATING.md" \
+                               "section 3 of package-build 15): '/${PKG}/  ${landing_url}  301'" \
+                               "and '/${PKG}  ${landing_url}  301'."
+                          exit 1
+                      }
+
+                      for src in "/${PKG}/" "/${PKG}"; do
+                          # Pages applies the FIRST matching rule, so the first
+                          # is the one read here. `#` opens a comment anywhere
+                          # on a line.
+                          dest=$(awk -v s="$src" '{ sub(/#.*/, "") } $1 == s { print $2; exit }' \
+                              "${SITE}/_redirects")
+
+                          if [ -z "$dest" ]; then
+                              echo "::error::${SITE}/_redirects carries no rule for ${src}, so that" \
+                                   "address serves Hugo's empty site root instead of the landing at" \
+                                   "${landing_url}. Pages matches the raw path before any" \
+                                   "trailing-slash handling, so ${src} needs its own rule even when" \
+                                   "the other form has one. Add '${src}  ${landing_url}  301'."
+                              exit 1
+                          fi
+
+                          if [ "${dest%/}" != "${landing_url%/}" ]; then
+                              echo "::error::${SITE}/_redirects sends ${src} to ${dest}, but this" \
+                                   "package's landing is at ${landing_url}. Point it there: the" \
+                                   "package root has no page of its own to serve."
+                              exit 1
+                          fi
+                      done
+
+                      echo "${SITE}/_redirects sends /${PKG}/ and /${PKG} to ${landing_url}."
                   fi
 
                   files=$(find "$dir" -name index.html | wc -l | tr -d ' ')
