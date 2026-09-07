@@ -359,8 +359,29 @@ jobs:
                           missing=1
                       fi
                   done
+
+                  # The content index, when the manifest advertises one (#239).
+                  # Its name is *read from the manifest* rather than assumed:
+                  # `flags.metadataUrl` is the URL every consumer fetches, so its
+                  # basename is by definition the name the asset must carry, and
+                  # deriving it a second time here would let the two disagree.
+                  #
+                  # Checked because the failure is otherwise invisible on this
+                  # side and lands weeks later in somebody else's build: a
+                  # release that advertises an index it does not carry 404s at
+                  # the consumer, which is exactly what v0.8.4 did.
+                  index_url="$(node -p "require('./build/dist/$KIND.json').flags?.metadataUrl ?? ''" 2>/dev/null || echo '')"
+                  index_asset=""
+                  if [ -n "$index_url" ]; then
+                      index_asset="build/dist/$(basename "$index_url")"
+                      if [ ! -s "$index_asset" ]; then
+                          echo "::error::$index_asset is missing or empty, but the manifest advertises it at $index_url — a release carrying that manifest would 404 for every consumer."
+                          missing=1
+                      fi
+                  fi
+
                   [ "$missing" -eq 0 ] || exit 1
-                  ls -l "build/dist/$KIND.zip" "build/dist/$KIND.json"
+                  ls -l "build/dist/$KIND.zip" "build/dist/$KIND.json" $index_asset
 
             # Creates the v<version> tag and the GitHub Release, attaching the
             # two assets Foundry installs and updates from.
@@ -393,6 +414,7 @@ jobs:
                   files: |
                       build/dist/${{ inputs.package-kind }}.zip
                       build/dist/${{ inputs.package-kind }}.json
+                      build/dist/*.jsonl
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
