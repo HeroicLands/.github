@@ -348,6 +348,7 @@ jobs:
             # Checked here rather than trusted, in the same spirit as the
             # completeness guard in deploy-package-site.yml.
             - name: The assets exist
+              id: assets
               if: steps.decide.outputs.release == 'true'
               env:
                   KIND: ${{ inputs.package-kind }}
@@ -359,11 +360,46 @@ jobs:
                           missing=1
                       fi
                   done
+
+                  # The content index, when the manifest advertises one.
+                  #
+                  # `flags.metadataUrl` is the URL every consuming package
+                  # fetches, so its basename is by definition the name the asset
+                  # must carry — the same derivation `package-build release`
+                  # makes when it stages the file. Read rather than hardcoded:
+                  # the name is per-package, and a second spelling of it here
+                  # could disagree with the manifest.
+                  #
+                  # A manifest advertising no index publishes none, which is
+                  # legitimate — a package with no content tree has nothing to
+                  # index. But one that advertises an index it does not carry
+                  # publishes a URL that 404s in someone else's build, which is
+                  # exactly the silent cross-package failure this asset exists
+                  # to end. So it is required when advertised, and required
+                  # HERE: the pack step already fails closed on producing it,
+                  # and until this guard the upload was the one place it could
+                  # go missing unnoticed.
+                  metadata=""
+                  url=$(node -p "(JSON.parse(require('fs').readFileSync('build/dist/$KIND.json','utf8')).flags||{}).metadataUrl||''")
+                  if [ -n "$url" ]; then
+                      name=$(basename "${url%%\?*}")
+                      if [ -s "build/dist/$name" ]; then
+                          metadata="build/dist/$name"
+                      else
+                          echo "::error::the manifest advertises $name as \`flags.metadataUrl\` but build/dist/$name is missing or empty. A Release carrying that URL would 404 for every consumer."
+                          missing=1
+                      fi
+                  fi
+
                   [ "$missing" -eq 0 ] || exit 1
-                  ls -l "build/dist/$KIND.zip" "build/dist/$KIND.json"
+                  echo "metadata=$metadata" >> "$GITHUB_OUTPUT"
+                  ls -l "build/dist/$KIND.zip" "build/dist/$KIND.json" $metadata
 
             # Creates the v<version> tag and the GitHub Release, attaching the
-            # two assets Foundry installs and updates from.
+            # two assets Foundry installs and updates from — and the content
+            # index when the manifest advertises one, verified by the step
+            # above. That third entry is empty for a package without one, and
+            # the action ignores a blank line in `files`.
             #
             # `prerelease` and `make_latest` are set together and always
             # explicitly. Both defaults are wrong for this family: the action
@@ -393,6 +429,7 @@ jobs:
                   files: |
                       build/dist/${{ inputs.package-kind }}.zip
                       build/dist/${{ inputs.package-kind }}.json
+                      ${{ steps.assets.outputs.metadata }}
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
