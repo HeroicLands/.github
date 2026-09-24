@@ -2,7 +2,9 @@ name: No AI attribution
 description: >-
   Fail when a pull request's title, body, or any of its commit messages carries
   AI/assistant attribution — a Co-Authored-By trailer naming an assistant, or a
-  "Generated with Claude Code"-style signature. Reports and fails; never edits.
+  standalone generated/assisted/written credit. Recognizes bounded assistant
+  names and mailboxes, including Markdown decoration. Does not scan files,
+  issues, comments, Git identities or arbitrary prose. Reports; never edits.
 
 inputs:
   token:
