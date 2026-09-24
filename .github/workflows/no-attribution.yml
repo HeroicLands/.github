@@ -1,12 +1,6 @@
 name: No Attribution
 
-# This repository's own pull requests, checked by the action it publishes.
-#
-# It addresses the action by local path rather than by `HeroicLands/.github@main`
-# like every other repository does, for two reasons: a pull request that changes
-# the action is then checked by its own version of it rather than by the one on
-# `main`, and the action could not otherwise be introduced here without failing
-# the pull request that introduces it. The local path is what needs the checkout.
+# The local action checks this repository's PRs using the proposed source.
 
 on:
   pull_request:
@@ -25,3 +19,13 @@ jobs:
       - uses: ./actions/no-attribution
         with:
           token: ${{ github.token }}
+
+  action-tests:
+    name: Attribution action tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: node --test actions/no-attribution/no-attribution.test.mjs
