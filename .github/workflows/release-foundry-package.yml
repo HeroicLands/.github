@@ -380,11 +380,35 @@ jobs:
                       fi
                   fi
 
+                  # The content book, when the package builds one. Most do
+                  # not: `package-build` fences the PDF behind
+                  # `publish.site: content`, so a package publishing only a
+                  # homepage emits none and its absence is the normal case
+                  # rather than a failure. What is checked is the one thing
+                  # that can go wrong here — a book that was produced but
+                  # came out empty, which would otherwise be attached
+                  # unverified and downloaded as a 0-byte file.
+                  book_assets=()
+                  for book in build/dist/*.pdf; do
+                      [ -e "$book" ] || continue
+                      if [ ! -s "$book" ]; then
+                          echo "::error::$book is empty after npm run build:pack-release."
+                          missing=1
+                      fi
+                      book_assets+=("$book")
+                  done
+
                   [ "$missing" -eq 0 ] || exit 1
-                  ls -l "build/dist/$KIND.zip" "build/dist/$KIND.json" $index_asset
+                  ls -l "build/dist/$KIND.zip" "build/dist/$KIND.json" $index_asset "${book_assets[@]}"
 
             # Creates the v<version> tag and the GitHub Release, attaching the
-            # two assets Foundry installs and updates from.
+            # two assets Foundry installs and updates from, plus whatever else
+            # `build:pack-release` produced beside them: the content index a
+            # manifest advertises, and the content book. Both are globbed
+            # rather than named, so a package that produces neither releases
+            # unchanged and no caller has to say which it emits —
+            # `fail_on_unmatched_files` stays at its default, where a glob
+            # matching nothing is not an error.
             #
             # `prerelease` and `make_latest` are set together and always
             # explicitly. Both defaults are wrong for this family: the action
@@ -415,6 +439,7 @@ jobs:
                       build/dist/${{ inputs.package-kind }}.zip
                       build/dist/${{ inputs.package-kind }}.json
                       build/dist/*.jsonl
+                      build/dist/*.pdf
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
