@@ -806,3 +806,78 @@ node --test actions/no-attribution/no-attribution.test.mjs
 
 The tests exercise the action entry point with event payloads and mocked commit
 API responses. CI runs them for PR changes, including body edits.
+
+## `actions/changesets`
+
+Two checks on the changesets a pull request carries, under one check name so a
+repository can make it required once.
+
+```yaml
+# .github/workflows/changesets.yml
+name: Changesets
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  changesets:
+    name: Changeset review
+    runs-on: ubuntu-latest
+    steps:
+      # Needs no checkout: the subjects are the pull request's files and reviews.
+      - uses: HeroicLands/.github/actions/changesets@main
+        with:
+          token: ${{ github.token }}
+```
+
+| Input | Default | |
+| --- | --- | --- |
+| `token` | — | needs `contents: read` and `pull-requests: read` |
+| `release-branch` | `changeset-release/main` | the Version Packages pull request's head branch |
+
+### An ordinary pull request adds at most one changeset
+
+A changeset is a Markdown file directly under `.changeset/` other than its
+README. Two or more added by one pull request fail, one finding per file. The
+case this catches is stacking: when one pull request merges into another's
+branch, each brings its own changeset, and the release reaches its readers as
+fragments of one change. Fold them into a single entry written for the person
+who meets the change. Editing an existing changeset is not an addition.
+
+### The release pull request is approved on its final commit
+
+The Version Packages pull request concatenates every changeset since the last
+release, and nobody has read the result as a whole until it opens. The bot also
+rebuilds its branch from scratch on every merge to `main`, discarding any edit
+made to it. So the check passes on the release pull request only when an
+approving review names its **current head commit**: the release note was read
+after its last regeneration, not before.
+
+The review is a read of the generated CHANGELOG section as one release note:
+merge bullets that describe one change from several pull requests, drop what a
+later pull request in the same release superseded, and regroup under the labels
+the release needs. Commit any edit to the release branch, then approve. An
+approval of an earlier commit is reported as stale, and each reviewer's latest
+decisive review counts, as GitHub counts it.
+
+The bot opens and updates the release pull request with the workflow token,
+which starts no workflow, so a regenerated head has no result for this check
+until someone reviews it. As a required check, that holds the merge until the
+review exists.
+
+Findings are `address: severity: message`: the changeset's path for the first
+check, `pull/<n>/reviews` for the second. An API read failure fails the check.
+Nothing is edited.
+
+Run the action's regression tests with:
+
+```bash
+node --test actions/changesets/changesets.test.mjs
+```
