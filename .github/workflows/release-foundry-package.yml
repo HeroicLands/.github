@@ -233,6 +233,10 @@ jobs:
                   version-script: npm run changeset:version
                   commit-message: "chore(release): version packages"
                   pr-title: "chore(release): version packages"
+                  # changesets/action v2 takes the token as an input and refuses an
+                  # environment GITHUB_TOKEN that differs from it, so both carry the
+                  # same value.
+                  github-token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
               env:
                   GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
