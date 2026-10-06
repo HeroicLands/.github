@@ -120,10 +120,24 @@ on:
             tag:
                 description: The `v<version>` tag, set only when `released` is true.
                 value: ${{ jobs.release.outputs.tag }}
+        secrets:
+            # Optional. With both, the Version Packages pull request is opened
+            # and updated by the release app instead of GITHUB_TOKEN. Events
+            # caused by GITHUB_TOKEN start no workflow, so without the app the
+            # release pull request never runs a check. Without them the
+            # workflow behaves as before.
+            RELEASE_APP_ID:
+                required: false
+            RELEASE_APP_PRIVATE_KEY:
+                required: false
 
 jobs:
     release:
         runs-on: ubuntu-latest
+
+        # A secret cannot be read in a step's `if`; this flag can.
+        env:
+            HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
 
         # Job-level rather than workflow-level: workflow-level `concurrency` in
         # a called workflow is evaluated in the caller's context and does not
@@ -162,9 +176,22 @@ jobs:
                           ;;
                   esac
 
+            # Scoped to this repository. The token checks out the tree as well
+            # as driving changesets/action: changesets pushes the version
+            # branch over the checkout's credentials, and a push made with
+            # GITHUB_TOKEN would leave the regenerated pull request unchecked.
+            - name: Mint the release app token
+              id: app-token
+              if: env.HAS_RELEASE_APP == 'true'
+              uses: actions/create-github-app-token@v2
+              with:
+                  app-id: ${{ secrets.RELEASE_APP_ID }}
+                  private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
             - name: Checkout code
               uses: actions/checkout@v7
               with:
+                  token: ${{ steps.app-token.outputs.token || github.token }}
                   # `changeset version` reads the history to build the
                   # changelog, and the decision below asks the remote for
                   # existing tags.
@@ -207,7 +234,7 @@ jobs:
                   commit-message: "chore(release): version packages"
                   pr-title: "chore(release): version packages"
               env:
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
             # Release only when the version pull request has merged: no
             # changesets remain AND this version has not already been tagged.
@@ -399,7 +426,7 @@ jobs:
                   done
 
                   [ "$missing" -eq 0 ] || exit 1
-                  ls -l "build/dist/$KIND.zip" "build/dist/$KIND.json" $index_asset "${book_assets[@]}"
+                  ls -l "build/dist/$KIND.zip" "build/dist/$KIND.json" ${index_asset:+"$index_asset"} "${book_assets[@]}"
 
             # Creates the v<version> tag and the GitHub Release, attaching the
             # two assets Foundry installs and updates from, plus whatever else
