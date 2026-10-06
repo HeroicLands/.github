@@ -50,31 +50,32 @@
 # 2026-08-28 a thalorna build emitted 2 pages instead of 1,715 and the guard is
 # the only reason that was caught before it shipped.
 #
-# So nothing is uploaded until the tree has been proven, and the proof is
-# derived from the package's publishing mode rather than configured per call:
+# So nothing is uploaded until the tree has been proven, and WHAT A CALLER
+# DECLARES IS WHAT IS PROVEN. Every run checks that index.html and 404.html are
+# non-empty, that `_headers` is at the deployment root and that the landing is
+# reachable at `/<package>/`. The page count is bounded two ways, and which one
+# applies follows from the inputs alone:
 #
-#   publish.site: content   index.html and 404.html non-empty, `_headers` at the
-#                           deployment root, the landing reachable at
-#                           `/<package>/`, and `min-pages` <= pages <=
-#                           `max-pages` (no ceiling when unset). `min-pages` is
-#                           REQUIRED — a content package that states no floor
-#                           has no guard, and a guard that cannot fail is not
-#                           one.
+#   min-pages stated    `min-pages` <= pages <= `max-pages`, with no ceiling
+#                       when `max-pages` is unset. A floor is required of any
+#                       caller that states a ceiling: a guard that cannot fail
+#                       is not one.
 #
-#   publish.site: homepage  index.html and 404.html non-empty, `_headers` at the
-#                           deployment root, the landing reachable at
-#                           `/<package>/`, and EXACTLY ONE page. Not a relaxed
-#                           check — a stricter one, and a two-sided one: a
-#                           build that emitted nothing fails, and so does a
-#                           build that emitted more than the homepage.
+#   neither stated      EXACTLY ONE page. Not a relaxed check — a stricter one,
+#                       and a two-sided one: a build that emitted nothing fails,
+#                       and so does a build that emitted more than the homepage.
 #
-# The homepage bounds are FIXED AT ONE and the caller cannot move them: passing
-# `min-pages` or `max-pages` in homepage mode fails the run. `kethira` and
-# `harnadventures` are homepage-only because publishing their content would
-# breach the fan-content licences they ship under (Keléstia's Fan Material
-# Guidelines; Lythia's terms), so "exactly one page" is a licensing boundary and
-# not a preference. A boundary a caller could widen with an input is not a
-# boundary.
+# The bounds are the mode because nothing else states one. `package-build`
+# decides what a package publishes from its authored content tree and refuses a
+# `publish.site` option, so this workflow reads no mode from the configuration
+# and a caller needs no second place to declare one.
+#
+# That keeps the fan-content boundary where it cannot be widened by an input.
+# A package shipping under Keléstia's Fan Material Guidelines or Lythia's terms
+# publishes its homepage alone by carrying no other publishable note — the fence
+# is the content tree itself, which a workflow input cannot reach. Such a caller
+# states no bounds, and a run that found a second page fails rather than
+# deploying it.
 #
 # A PAGE IS PUBLISHED MATERIAL, NOT AN `index.html`, and WHERE THE LANDING
 # LIVES DEPENDS ON THE INSTALLED `@heroiclands/package-build`, which the guard
@@ -163,19 +164,21 @@ on:
                     as `index.html` files under the package prefix — less the
                     site root Hugo generates at `/<package>/` once a package's
                     landing has an address of its own, which is nobody's page.
-                    REQUIRED in `content` mode and REJECTED in `homepage`
-                    mode, where the count is fixed at exactly one. Set it below
-                    the real figure with room for growth, not at it: it is a
-                    floor that catches a collapsed build, not an assertion about
-                    today's page count.
+                    Stating it is what declares that this package publishes
+                    content pages; a caller that states neither bound is held
+                    to exactly one page, its homepage. Set it below the real
+                    figure with room for growth, not at it: it is a floor that
+                    catches a collapsed build, not an assertion about today's
+                    page count.
                 required: false
                 default: 0
                 type: number
             max-pages:
                 description: >-
-                    Most pages a complete build emits; 0 for no ceiling. Rejected
-                    in `homepage` mode. Useful where a package's page count has
-                    an upper bound worth asserting.
+                    Most pages a complete build emits; 0 for no ceiling. Useful
+                    where a package's page count has an upper bound worth
+                    asserting. A caller stating this must state `min-pages`
+                    too.
                 required: false
                 default: 0
                 type: number
@@ -196,8 +199,8 @@ on:
                 type: string
             config:
                 description: >-
-                    The shared package configuration, read for `contentPackage`
-                    and `publish.site`.
+                    The shared package configuration, read for
+                    `contentPackage`.
                 required: false
                 default: "package-build.config.yaml"
                 type: string
@@ -278,10 +281,11 @@ jobs:
                   # 0 rather than the default 1: it also brings the tags.
                   fetch-depth: 0
 
-            # The package name and the publishing mode come from the same file
-            # the toolchain builds from, so the guard cannot be told one thing
-            # while the build does another.
-            - name: Read the package and its publishing mode
+            # The package name comes from the same file the toolchain builds
+            # from, so the guard cannot be told one thing while the build does
+            # another. The bounds come from the caller, which is the only place
+            # that states them.
+            - name: Read the package and the bounds it declares
               id: pkg
               env:
                   CONFIG: ${{ inputs.config }}
@@ -298,19 +302,11 @@ jobs:
                   }
                   test -f "$CONFIG" || {
                       echo "::error::${CONFIG} not found. This workflow reads the package name" \
-                           "and its publishing mode from the shared package-build configuration."
+                           "from the shared package-build configuration."
                       exit 1
                   }
 
                   pkg=$(yq -r '.contentPackage // ""' "$CONFIG")
-
-                  # Read plainly — NOT `.publish.site // "homepage"`. `//` is an
-                  # alternative operator, not a null-coalesce: it takes its right
-                  # side for `false` as well as for absent, so the boolean this
-                  # setting used to be would be silently rewritten into the very
-                  # mode the refusal below exists to prevent. An unset value is
-                  # `null`, and only `null` may default.
-                  mode=$(yq -r '.publish.site' "$CONFIG")
 
                   if [ -z "$pkg" ]; then
                       echo "::error file=${CONFIG}::contentPackage is not set. It is the path" \
@@ -318,37 +314,33 @@ jobs:
                       exit 1
                   fi
 
-                  # `publish.site` was a boolean until package-build 5.0, where
-                  # `false` read as "no web presence" — which no longer describes
-                  # any package. The toolchain refuses the boolean rather than
-                  # mapping it, because a value quietly reinterpreted still reads
-                  # to its author as what it said. Refuse it the same way here.
-                  case "$mode" in
-                    null|"") mode=homepage ;;
-                    content|homepage) ;;
-                    true)  echo "::error file=${CONFIG}::publish.site is no longer a boolean — write \`site: content\`. Every package publishes an authored homepage, so no value means \"no web presence\"."; exit 1 ;;
-                    false) echo "::error file=${CONFIG}::publish.site is no longer a boolean — write \`site: homepage\`. Every package publishes an authored homepage, so no value means \"no web presence\"."; exit 1 ;;
-                    *)     echo "::error file=${CONFIG}::publish.site must be \`homepage\` or \`content\` (got '${mode}')."; exit 1 ;;
-                  esac
-
-                  if [ "$mode" = "homepage" ]; then
-                      # Fixed at one, and the caller may not move it: the bound is
-                      # a fan-content licensing boundary, and a boundary an input
-                      # can widen is not a boundary.
-                      if [ "${MIN_IN:-0}" -ne 0 ] || [ "${MAX_IN:-0}" -ne 0 ]; then
-                          echo "::error::${pkg} is homepage-only, so it publishes exactly one page" \
-                               "and min-pages / max-pages do not apply. Remove them from the caller."
-                          exit 1
-                      fi
+                  # The bounds ARE the mode. Nothing in the configuration states
+                  # a publishing mode: `package-build` decides from the authored
+                  # content tree, and refuses a `publish.site` option, so there
+                  # is no key here to read. What a caller declares says the same
+                  # thing without a second source of truth — a package that
+                  # publishes content pages has a count worth bounding, and one
+                  # that publishes its homepage alone has nothing to bound.
+                  #
+                  # A `max-pages` of zero means no ceiling, which is why the
+                  # ceiling is read as "stated" rather than "non-zero".
+                  if [ "${MIN_IN:-0}" -lt 1 ] && [ "${MAX_IN:-0}" -lt 1 ]; then
+                      # The homepage and nothing else. Pinned at one rather than
+                      # merely floored there: a package whose tree holds no other
+                      # publishable note cannot emit a second page, so a run that
+                      # emitted one is reporting something other than what this
+                      # caller publishes.
+                      mode=homepage
                       min=1
                       max=1
                   else
                       if [ "${MIN_IN:-0}" -lt 1 ]; then
-                          echo "::error::${pkg} publishes content pages, so the caller must state" \
-                               "min-pages. Without a floor a build that emits nothing passes, and" \
-                               "a Pages deploy replaces the whole tree with it."
+                          echo "::error::${pkg} states max-pages but no min-pages. Without a floor" \
+                               "a build that emits nothing passes, and a Pages deploy replaces the" \
+                               "whole tree with it."
                           exit 1
                       fi
+                      mode=content
                       min="${MIN_IN:-0}"
                       max="${MAX_IN:-0}"
                   fi
