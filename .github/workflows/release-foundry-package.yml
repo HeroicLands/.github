@@ -133,6 +133,9 @@ on:
 
 jobs:
     release:
+        # Runs on GitHub only. On Gitea this file is not the release path; the
+        # Gitea-side workflow under .gitea/workflows is.
+        if: ${{ github.server_url == 'https://github.com' }}
         runs-on: ubuntu-latest
 
         # A secret cannot be read in a step's `if`; this flag can.
