@@ -255,6 +255,9 @@ on:
 
 jobs:
     deploy:
+        # Runs on GitHub only. On Gitea this file is not the deploy path; the
+        # Gitea-side workflow under .gitea/workflows is.
+        if: ${{ github.server_url == 'https://github.com' }}
         runs-on: ubuntu-latest
 
         # Job-level rather than workflow-level: workflow-level `concurrency` in

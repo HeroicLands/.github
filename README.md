@@ -12,6 +12,9 @@ those, which is what this repository is for.
 
 ## `.github/workflows/deploy-package-site.yml`
 
+Its job runs only on GitHub (`github.server_url == 'https://github.com'`); a
+copy of this repository on another forge skips it.
+
 Builds a package's website and publishes it at
 `https://www.heroiclands.org/<package>/`. The first reusable workflow here, so
 it sets the convention: reusable **workflows** live in `.github/workflows/`
@@ -310,6 +313,9 @@ repository governance.
 the current one. A caller that needs to pin can reference a SHA.
 
 ## `.github/workflows/release-foundry-package.yml`
+
+Its job runs only on GitHub (`github.server_url == 'https://github.com'`); a
+copy of this repository on another forge skips it.
 
 Versions a Foundry package with changesets and cuts the GitHub Release that
 Foundry installs from.
