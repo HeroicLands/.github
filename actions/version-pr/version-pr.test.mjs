@@ -114,7 +114,11 @@ async function gitea({ pulls = [], fail = {}, merge = { status: 201, body: "" } 
             Object.assign(pr, JSON.parse(body));
             return send(201, pr);
         }
-        if (one && one[2] && req.method === "POST") return send(merge.status, merge.status === 201 ? undefined : { message: merge.body });
+        if (one && one[2] && req.method === "POST") {
+            // `merge` is one answer for every call, or a list answered in turn.
+            const m = Array.isArray(merge) ? merge.shift() ?? { status: 201, body: "" } : merge;
+            return send(m.status, m.status === 201 ? undefined : { message: m.body });
+        }
         send(404, { message: "not found" });
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -348,4 +352,16 @@ test("a new commit on the base regenerates the branch from scratch", async () =>
     assertOneCommit(remote, base);
     assert.match(git(remote, "show", `${remoteHead(remote)}:CHANGELOG.md`), /Tables sort by name\./);
     assert.ok(existsSync(join(work, "CHANGELOG.md")));
+});
+
+test("a bare 405 is asked once more, and a schedule or an already-scheduled answer then succeeds", async () => {
+    const scheduled = await run(checkout().work, await gitea({ merge: [{ status: 405, body: "" }, { status: 201, body: "" }] }));
+    assert.equal(scheduled.status, 0, scheduled.stderr);
+    assert.match(scheduled.stdout, /scheduled the squash merge/);
+    const already = await run(
+        checkout().work,
+        await gitea({ merge: [{ status: 405, body: "" }, { status: 409, body: "pull request is already scheduled to auto merge when checks succeed [pull_id: 100]" }] }),
+    );
+    assert.equal(already.status, 0, already.stderr);
+    assert.match(already.stdout, /already scheduled/);
 });

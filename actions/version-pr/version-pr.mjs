@@ -393,12 +393,18 @@ export async function main(env = process.env) {
         console.log(`version-pr: opened pull request #${number}.`);
     }
 
-    const merge = await api(
-        "POST",
-        `/repos/${repo}/pulls/${number}/merge`,
-        { Do: "squash", merge_when_checks_succeed: true },
-        { accept: [405, 409] },
-    );
+    // Gitea can answer a bare 405 when the PR's checks are already green but its
+    // approval is missing, whether or not it scheduled the merge; asking again
+    // answers 201 (scheduled now) or "already scheduled".
+    const schedule = () =>
+        api(
+            "POST",
+            `/repos/${repo}/pulls/${number}/merge`,
+            { Do: "squash", merge_when_checks_succeed: true },
+            { accept: [405, 409] },
+        );
+    let merge = await schedule();
+    if (merge.status === 405 && !/already scheduled/i.test(merge.text)) merge = await schedule();
     if (merge.status === 405 || merge.status === 409) {
         if (!/already scheduled/i.test(merge.text)) {
             throw new Finding(
