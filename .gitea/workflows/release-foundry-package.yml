@@ -327,6 +327,21 @@ jobs:
                       tag_sha=$(git ls-remote --tags origin "refs/tags/$TAG^{}" | awk 'NR==1 {print $1}')
                       [ -n "$tag_sha" ] || tag_sha=$(git ls-remote --tags origin "refs/tags/$TAG" | awk 'NR==1 {print $1}')
                       if [ -n "$tag_sha" ] && [ "$tag_sha" = "$(git rev-parse HEAD)" ]; then
+                          # A release already published on GitHub with every asset
+                          # uploaded is finished: a rebuild is not byte-identical, so
+                          # comparing it would only refuse. Nothing is left to do.
+                          rel=$(curl -fsS -H "Accept: application/vnd.github+json" \
+                                "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" 2>/dev/null || true)
+                          if [ -n "$rel" ] && printf '%s' "$rel" | jq -e '
+                                (.draft | not)
+                                and (.assets | length > 0)
+                                and all(.assets[]; .state == "uploaded")
+                                and any(.assets[]; .name | test("^(module|system)\\.zip$"))
+                                and any(.assets[]; .name | test("^(module|system)\\.json$"))' >/dev/null; then
+                              echo "$TAG is already published on GitHub with all its assets — nothing to do."
+                              echo "release=false" >> "$GITHUB_OUTPUT"
+                              exit 0
+                          fi
                           echo "Tag $TAG already names this commit — resuming its release."
                           echo "release=true" >> "$GITHUB_OUTPUT"
                           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
