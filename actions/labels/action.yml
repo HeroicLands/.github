@@ -1,13 +1,14 @@
 name: Repository labels
 description: >-
-  Check a repository's .github/labels.yml, or sync GitHub's labels to it. The
-  registry is a closed set: a label GitHub has and the file does not is removed.
+  Check a repository's .github/labels.yml, or sync the forge's labels to it. The
+  registry is a closed set: a label the forge has and the file does not is
+  removed. Runs on GitHub and on Gitea.
 
 inputs:
   mode:
     description: >-
       check — validate the registry and report what syncing would change,
-      touching nothing. sync — make GitHub match the registry.
+      touching nothing. sync — make the forge match the registry.
     required: false
     default: check
   registry:

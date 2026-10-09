@@ -18,7 +18,7 @@
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-const API = "https://api.github.com";
+import { ApiError, forgeOf, readAll } from "../lib/forge.mjs";
 
 /** A finding, in the form an error matcher already reads. */
 export function format({ file, line, column, severity = "error", message }) {
@@ -56,12 +56,15 @@ export function addedChangesets(files) {
  * Whether the release pull request has been approved on its current head.
  *
  * Each reviewer's latest decisive review (approved, changes requested or
- * dismissed) is the one that counts, as GitHub counts it. An approval passes
- * only when it names the head commit: the bot rebuilds the branch on every
- * merge to `main`, and an approval of an earlier commit approved a release
- * note that no longer exists.
+ * dismissed) is the one that counts, as the forge counts it. GitHub reports a
+ * change request as `CHANGES_REQUESTED` and a dismissal as the state
+ * `DISMISSED`; Gitea reports `REQUEST_CHANGES` and keeps a dismissed review's
+ * original state with `dismissed: true`. Both shapes are read. An approval
+ * passes only when it names the head commit: the bot rebuilds the branch on
+ * every merge to `main`, and an approval of an earlier commit approved a
+ * release note that no longer exists.
  *
- * @param {{state: string, commit_id: string, user?: {login: string}}[]} reviews
+ * @param {{state: string, dismissed?: boolean, commit_id: string, user?: {login: string}}[]} reviews
  *   the pull request's reviews, oldest first
  * @param {string} head the head commit's SHA
  * @returns {{approved: boolean, stale: string[]}} whether an approval names the
@@ -70,8 +73,12 @@ export function addedChangesets(files) {
 export function releaseReview(reviews, head) {
     const latest = new Map();
     for (const review of reviews) {
-        if (["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(review.state)) {
-            latest.set(review.user?.login ?? "", review);
+        const state =
+            review.dismissed === true ? "DISMISSED"
+            : review.state === "REQUEST_CHANGES" ? "CHANGES_REQUESTED"
+            : review.state;
+        if (["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(state)) {
+            latest.set(review.user?.login ?? "", { ...review, state });
         }
     }
     const approvals = [...latest.values()].filter((r) => r.state === "APPROVED");
@@ -85,28 +92,19 @@ export function releaseReview(reviews, head) {
 
 /** Every page of a list endpoint. A failed read exits: a partial list is not a check. */
 async function list(path, token, address) {
-    const headers = {
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        Authorization: `Bearer ${token}`,
-    };
-    const items = [];
-    for (let page = 1; ; page++) {
-        const res = await fetch(`${API}${path}?per_page=100&page=${page}`, { headers });
-        if (!res.ok) {
-            console.error(
-                format({
-                    file: address,
-                    message:
-                        `could not be read: ${res.status} ${await res.text()}. ` +
-                        "The token needs `contents: read` and `pull-requests: read`",
-                }),
-            );
-            process.exit(1);
-        }
-        const batch = await res.json();
-        items.push(...batch);
-        if (batch.length < 100) return items;
+    try {
+        return await readAll(forgeOf(), path, token);
+    } catch (error) {
+        if (!(error instanceof ApiError)) throw error;
+        console.error(
+            format({
+                file: address,
+                message:
+                    `could not be read: ${error.status} ${error.body}. ` +
+                    "The token needs `contents: read` and `pull-requests: read`",
+            }),
+        );
+        process.exit(1);
     }
 }
 

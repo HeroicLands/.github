@@ -1,0 +1,11 @@
+{
+    "action": "synchronized",
+    "number": 7,
+    "pull_request": {
+        "number": 7,
+        "title": "Add the thing",
+        "body": "",
+        "head": { "ref": "changeset-release/main", "sha": "18c2004" }
+    },
+    "review": { "type": "pull_request_review_approved", "content": "Read it." }
+}

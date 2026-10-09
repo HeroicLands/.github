@@ -631,6 +631,149 @@ workflow was the only thing that ran it, so a release was the first place anyone
 would have found out, and two of the six had never cut one. Before pointing new
 automation at a repository's build, run it.
 
+## `.gitea/workflows/`: the reusable workflows on Gitea
+
+Gitea reads `.gitea/workflows/` and, once that directory exists, ignores
+`.github/workflows/`. The Gitea-flavoured copies of the two reusable workflows
+live there; the GitHub-flavoured ones stay in `.github/workflows/` and each of
+their jobs runs only when `github.server_url == 'https://github.com'`. A file is
+read by one forge only, so a missing guard cannot start anything on the other.
+
+A caller reaches the Gitea copies as
+`HeroicLands/.github/.gitea/workflows/<file>@main`. Gitea resolves that path
+against its own `HeroicLands/.github`, which lists `HeroicLands` under Settings →
+Actions → Collaborative Owners; without that entry no repository can use its
+workflows or actions. The shared actions are referenced in the bare form,
+`HeroicLands/.github/actions/<name>@main`, which Gitea fetches from github.com.
+
+| Workflow | Job | Gate | Secrets |
+| --- | --- | --- | --- |
+| `release-foundry-package.yml` | `release` | `github.server_url != 'https://github.com' && vars.HL_RELEASE_ENABLED == 'true'` | `RELEASE_BOT_TOKEN`, `GH_RELEASE_TOKEN` |
+| `deploy-package-site.yml` | `deploy` | `github.server_url != 'https://github.com' && vars.HL_DEPLOY_ENABLED == 'true'` | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` |
+
+A called workflow reads the **caller's** repository variables, so a repository
+turns releasing on by setting its own `HL_RELEASE_ENABLED` to `true` and
+deploying on by setting `HL_DEPLOY_ENABLED` to `true`. A repository with neither
+variable runs neither job. The secrets are organisation-level on Gitea and are
+passed by name; `secrets: inherit` is never used.
+
+Both jobs run on `ubuntu-latest`, a host-mode runner that already carries Node,
+Hugo, `yq`, `jq` and `curl`. Nothing is installed into a system path. The job
+token never starts other workflows, so every push and pull request that has to
+run checks is made with `RELEASE_BOT_TOKEN`.
+
+### Releasing from Gitea
+
+```yaml
+# .gitea/workflows/release.yml — in the package repository
+name: Version and Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    uses: HeroicLands/.github/.gitea/workflows/release-foundry-package.yml@main
+    with:
+      package-kind: module
+    secrets:
+      RELEASE_BOT_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
+      GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+```
+
+The inputs, outputs, build contract, channel rule and asset guard are those of
+the GitHub copy above. The release sequence:
+
+1. **Version Packages.** With changesets pending, `actions/version-pr` runs the
+   repository's `changeset:version` script on `changeset-release/main` and
+   force-pushes the result as one commit with `RELEASE_BOT_TOKEN`. It opens or
+   updates the pull request and schedules its squash merge for when the checks
+   pass. Because the bot is a user of the forge, its push starts the
+   repository's checks.
+2. **Decide.** With none pending, the job reads the version from
+   `package.json` and computes `v<version>` and its channel exactly as the
+   GitHub copy does. A tag that exists elsewhere means nothing to release. A tag
+   that already names the checked-out commit resumes the release, so a re-run
+   after a failed upload finishes it.
+3. **Build and package.** The same two npm scripts and the same asset guard.
+4. **Tag.** The job pushes `v<version>` to the forge with the bot's token. A
+   resumed run skips this step.
+5. **GitHub Release.** `actions/github-release` waits for the push mirror to
+   deliver the tag to GitHub at the same commit, creates the release as a draft,
+   uploads and checks every asset, and publishes it with `prerelease` and
+   `make-latest` set explicitly. `GH_RELEASE_TOKEN` is a GitHub token with
+   Contents read and write; the job writes no git ref on GitHub.
+6. **Post-release.** The optional `post-release-script` runs with `GITEA_TOKEN`
+   (the job token) and `RELEASE_TAG` in its environment.
+
+| Secret | |
+| --- | --- |
+| `RELEASE_BOT_TOKEN` | the release bot's personal access token on Gitea, with write access to the repository |
+| `GH_RELEASE_TOKEN` | a GitHub fine-grained personal access token with Contents read and write on the releasing repositories |
+
+### Deploying from Gitea
+
+```yaml
+# .gitea/workflows/deploy-site.yml — in the package repository
+name: Deploy site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    uses: HeroicLands/.github/.gitea/workflows/deploy-package-site.yml@main
+    with:
+      project: <pages-project>
+      min-pages: 40
+      max-pages: 150
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+```
+
+The inputs, the build contract, the `_headers` default, the completeness guard
+and the hosting steps are those of the GitHub copy above. The Gitea copy adds a
+step that fails with the list of missing tools when `yq`, `jq` or `curl` is
+absent from the runner, and gives the build step no forge token.
+
+### Pull-request checks
+
+`changesets.yml` and `no-attribution.yml` are the same files in both
+directories, each running the local action against the pull request.
+
+### Workflow parity
+
+`ci/workflow-parity.test.mjs` parses both copies of each reusable workflow and
+fails when a safety-relevant element differs: the `run:` body of every shared
+step (the build and pack scripts, the completeness guard and its page bounds,
+the `_headers` default, the changelog extraction and the asset guard), the
+already-released guard and the version and tag computation (the Gitea decision
+may add only its marked resume block), the release asset list, the declared
+inputs and outputs, and the set of steps each copy has. It also asserts that
+every Gitea job carries its `HL_*_ENABLED` gate, that every GitHub job carries
+its `github.com` guard, that the Gitea copies hold no GitHub-only release
+machinery, and that no expression builds a link from `github.server_url`, which
+on Gitea is the runner's internal address.
+
+```bash
+npm ci --prefix ci
+node --test actions/*/*.test.mjs ci/*.test.mjs
+```
+
+A pull request that touches either workflow directory or `ci/` runs the test
+through `.gitea/workflows/workflow-parity.yml`.
+
 ## `SECURITY.md`
 
 The organisation's default security policy, inherited by every repository that
@@ -697,7 +840,8 @@ which must report `true` for all ten before #14 is done.
 
 ## `actions/labels`
 
-Checks a repository's `.github/labels.yml`, or syncs GitHub's labels to it.
+Checks a repository's `.github/labels.yml`, or syncs the forge's labels to it.
+It supports both GitHub and Gitea.
 
 ```yaml
 # .github/workflows/labels.yml
@@ -733,7 +877,7 @@ jobs:
 | `token` | — | needs `issues: write`; without one, `check` validates the file alone |
 
 **The registry is a closed set.** A label the file declares is created or
-corrected; a label GitHub has and the file does not is **deleted**, along with
+corrected; a label the forge has and the file does not is **deleted**, along with
 its presence on every issue carrying it. That is the point of a registry rather
 than a starting point — labels otherwise accumulate from templates,
 integrations and typos until the set means nothing — and it is why `check` runs
@@ -744,9 +888,36 @@ Findings are reported as `file:line:column: severity: message`, the form every
 C-family compiler and ESLint emit, so an error matcher resolves them without
 being taught the layout.
 
+### Both forges
+
+The API base is the job's `GITHUB_API_URL`, and the forge is GitHub exactly when
+`GITHUB_SERVER_URL` is `https://github.com`. The differences the action absorbs:
+
+| | GitHub | Gitea |
+| --- | --- | --- |
+| Address of an existing label | its name | its numeric id, read when the labels are listed |
+| Rename field of an update | `new_name` | `name` |
+| `exclusive: true` on a registry entry | not sent and not compared | sent, and compared against the repository |
+| Colour as listed | no `#` | no `#`; a leading `#` is stripped on either side before comparing |
+
+A registry entry may declare `exclusive: true`, which makes a scoped label
+(`scope/name`) mutually exclusive within its scope on Gitea. The lists are read
+to the end whatever the page size, which Gitea caps at 50.
+
+After a `sync`, the action reads the labels back and fails, naming each
+difference, when any label still differs from the registry. Gitea answers a
+delete with `204` even when it removed nothing, so the read-back is what proves
+a sync took effect. A `sync` on Gitea deletes every label the registry omits, so
+a repository's `labels.yml` lists all the labels it keeps before its first
+sync there.
+
+Run the action's regression tests with `node --test actions/labels/*.test.mjs`;
+they run a label store that behaves as each forge does.
+
 ## `actions/todos`
 
 Fails when a committed comment carries a `TODO`/`FIXME` marker.
+It reads only the checked-out files, so it runs the same on GitHub and Gitea.
 
 ```yaml
 # as a step in an existing workflow — it needs a checkout and nothing else
@@ -789,7 +960,9 @@ acquiring a build toolchain to write one line would be the wrong trade.
 ## `actions/no-attribution`
 
 Fails a pull request whose title, body, or commit messages credit an AI
-assistant.
+assistant. It supports both GitHub and Gitea: the commit list is read from
+`GITHUB_API_URL` and followed to its last page whatever page size the forge
+applies (Gitea caps it at 50).
 
 ```yaml
 # .github/workflows/no-attribution.yml
@@ -860,12 +1033,14 @@ node --test actions/no-attribution/no-attribution.test.mjs
 ```
 
 The tests exercise the action entry point with event payloads and mocked commit
-API responses. CI runs them for PR changes, including body edits.
+API responses served in each forge's paging style, including a pull request
+whose commits span more than one page. CI runs them for PR changes, including
+body edits.
 
 ## `actions/changesets`
 
 Two checks on the changesets a pull request carries, under one check name so a
-repository can make it required once.
+repository can make it required once. It supports both GitHub and Gitea.
 
 ```yaml
 # .github/workflows/changesets.yml
@@ -920,7 +1095,11 @@ merge bullets that describe one change from several pull requests, drop what a
 later pull request in the same release superseded, and regroup under the labels
 the release needs. Commit any edit to the release branch, then approve. An
 approval of an earlier commit is reported as stale, and each reviewer's latest
-decisive review counts, as GitHub counts it.
+decisive review counts, as the forge counts it. GitHub reports a change request
+as `CHANGES_REQUESTED` and a dismissal as the state `DISMISSED`; Gitea reports
+`REQUEST_CHANGES` and keeps a dismissed review's original state with
+`dismissed: true`. Both are read, so a dismissed approval never counts and a
+change request withdraws an earlier approval on either forge.
 
 The bot opens and updates the release pull request with the workflow token,
 which starts no workflow, so a regenerated head has no result for this check
@@ -931,8 +1110,211 @@ Findings are `address: severity: message`: the changeset's path for the first
 check, `pull/<n>/reviews` for the second. An API read failure fails the check.
 Nothing is edited.
 
+The pull request's files and reviews are read from `GITHUB_API_URL` and followed
+to the last page, so a pull request with more files than one page holds is
+checked whole on Gitea as on GitHub.
+
 Run the action's regression tests with:
 
 ```bash
 node --test actions/changesets/changesets.test.mjs
+```
+
+## `actions/version-pr`
+
+Opens or updates the Version Packages pull request on the forge the job runs
+on, and schedules its squash merge for when its checks succeed. It speaks the
+Gitea API at the runner's `GITHUB_API_URL`.
+
+```yaml
+# a step in the release job, after a checkout with history and `npm ci`
+- name: Open or update the Version Packages pull request
+  id: version
+  uses: HeroicLands/.github/actions/version-pr@main
+  with:
+    token: ${{ secrets.RELEASE_BOT_TOKEN }}
+```
+
+| Input | Default | |
+| --- | --- | --- |
+| `token` | — | the bot's personal access token; the push and every API call use it |
+| `version-script` | `changeset:version` | the npm script that versions the packages and refreshes the lockfile |
+| `branch` | `changeset-release/main` | the release branch the pull request comes from |
+| `base` | `main` | the branch it merges into |
+| `title` | `chore(release): version packages` | the pull request's title |
+| `commit-message` | `chore(release): version packages` | the release branch's one commit message |
+| `author-name` | the token's login | the commit's author and committer |
+| `author-email` | the token account's email | |
+
+| Output | |
+| --- | --- |
+| `has-changesets` | `true` when changesets were pending and the pull request is open, `false` when none were |
+| `pr-number` | the pull request's number, set with `has-changesets: true` |
+
+`has-changesets` is the literal `false` when nothing is pending, never empty, so
+a release step gated on `steps.version.outputs['has-changesets'] == 'false'`
+runs exactly when a version bump has just merged.
+
+**What a run does.**
+
+1. **Pending?** A changeset is a Markdown file directly under `.changeset/`
+   other than its README. With none, the action reports `false`, makes no API
+   call and pushes nothing.
+2. **Version.** It resets the release branch to the checked-out commit and runs
+   `npm run <version-script>`, so the script gets a shell and a `&&` chain
+   belongs in `package.json`. The script runs with the bot's identity in the
+   environment, so `changeset version` with `"commit": true` can commit.
+3. **One commit.** Whatever the script committed and whatever it left in the
+   tree become a single commit on the checked-out commit, with the bot as
+   author and committer. The repository's own git hooks run on it. Pending
+   changesets that change nothing fail the run: a `private: true` package
+   versions nothing unless `.changeset/config.json` sets
+   `privatePackages.version`.
+4. **Push.** The commit is force-pushed to the release branch with the bot's
+   token, whatever token checked the tree out: every persisted `extraheader`
+   and credential helper is set aside for that one push. A push made with the
+   job token starts no workflow, and the bot's push does, so the pull request
+   runs its checks on every regeneration. The release branch must not be
+   protected.
+5. **Pull request.** The open pull request from the release branch into the
+   base is found by reading every page of open pull requests, 50 to a page,
+   and is updated in place; with none, one is opened. A pull request from a
+   fork's branch of the same name is not it. The body is
+   `Merging this pull request releases v<version>.` followed by that version's
+   CHANGELOG section, taken by the same rule the release step uses.
+6. **Merge.** The squash merge is scheduled with
+   `{"Do": "squash", "merge_when_checks_succeed": true}`. Gitea answers 201
+   when it schedules and 405 when a merge is already scheduled; both are
+   success. The pull request then merges by itself once branch protection's
+   approval and required checks both hold.
+
+**A re-run keeps the reviewed branch.** When the remote release branch already
+starts with this exact version commit (same parent, same tree), nothing is
+pushed, so an approval stands and a release-note edit committed on top of it is
+kept; the body is then read from the branch's head. Any new commit on the base
+regenerates the branch from scratch, which discards those edits and, under
+Gitea's "dismiss stale approvals", the approval with them. The release note is
+read on the final commit.
+
+Findings are `address: severity: message`. An API refusal names the endpoint,
+the method, the status and the forge's answer, as in
+`repos/HeroicLands/x/pulls: error: POST answered 403: …`; a failing git
+command or version script names what ran and its exit status. The token is
+never printed.
+
+## `actions/github-release`
+
+Publishes the GitHub Release for a tag that another forge owns and the push
+mirror delivers. The job never writes a git ref on GitHub; the mirror is the
+only writer of GitHub's refs.
+
+```yaml
+# a step in the release job, after the tag is pushed to the forge and the
+# assets are built
+- name: Publish the GitHub Release
+  uses: HeroicLands/.github/actions/github-release@main
+  with:
+    token: ${{ secrets.GH_RELEASE_TOKEN }}
+    tag: ${{ steps.decide.outputs.tag }}
+    name: Release ${{ steps.decide.outputs.tag }}
+    body-path: build/release-notes.md
+    prerelease: ${{ steps.decide.outputs.prerelease }}
+    make-latest: ${{ steps.decide.outputs.make_latest }}
+    files: |
+      build/dist/module.zip
+      build/dist/module.json
+      build/dist/*.jsonl
+      build/dist/*.pdf
+```
+
+| Input | Default | |
+| --- | --- | --- |
+| `token` | — | a GitHub token with Contents read and write on the release repository |
+| `tag` | — | the tag to release; it must exist in the checkout |
+| `name` | the tag | the release title |
+| `body-path` | none | the release notes; at most 125,000 characters |
+| `prerelease` | — | the literal `true` or `false` |
+| `make-latest` | — | the literal `true` or `false`; `true` with `prerelease: true` is refused |
+| `files` | — | newline-separated globs; a glob matching nothing is not an error, no file at all is |
+| `wait-seconds` | `900` | how long to wait for the mirror to deliver the tag |
+| `poll-seconds` | `15` | the pause between checks for the tag, and for Latest |
+| `api-url` | `https://api.github.com` | |
+| `uploads-url` | `https://uploads.github.com` | |
+| `server-url` | `https://github.com` | the host serving `releases/latest/download` |
+
+| Output | |
+| --- | --- |
+| `release-url` | the release's page |
+| `release-id` | the release's numeric id |
+
+**Which repository.** The release lands in the repository
+`package.json#repository.url` names, which must be
+`[git+]https://github.com/<owner>/<repo>[.git]`. A Foundry manifest's
+`manifest`, `download` and `flags.metadataUrl` derive from that field, so a
+release made anywhere else leaves every installed copy pointing at nothing.
+
+**Before any request.** The inputs are checked; every glob is expanded, and an
+empty file, two files sharing a name, or a name GitHub rewrites on upload fails
+the run. Every Foundry manifest among the files (a JSON file with `manifest` or
+`download`) must carry the addresses a release serves:
+
+| Field | Must be |
+| --- | --- |
+| `manifest` | `https://github.com/<owner>/<repo>/releases/latest/download/<the manifest's own file name>` |
+| `download` | `https://github.com/<owner>/<repo>/releases/download/<tag>/<a file of this release>` |
+| `flags.metadataUrl`, when present | the same shape as `download` |
+| `version`, when present | the tag without its leading `v` |
+
+**Then, in order.**
+
+1. **The tag on GitHub, at the right commit.** The commit the tag names in the
+   checkout is the expected one. The action polls
+   `GET /repos/<owner>/<repo>/git/ref/tags/<tag>`, following an annotated tag
+   to its commit. A 404 keeps waiting; a commit other than the expected one
+   fails the run before anything is written, because a release is never
+   attached to a tag the mirror delivered differently. After `wait-seconds` it
+   fails, saying the push mirror has not delivered the tag to GitHub and to
+   re-run once it has.
+2. **An existing release.** A published release for the tag whose assets match
+   the files by name, size and digest, and whose prerelease flag matches, is a
+   success with nothing written. One that differs fails the run: a published
+   release is never edited here. A draft for the tag, found by reading every
+   page of releases, is reused and its fields brought up to date.
+3. **Draft.** Otherwise a draft is created with the tag, name, body and
+   prerelease flag, and no `target_commitish`, so GitHub never creates the tag
+   itself.
+4. **Upload.** Every asset already on the draft is deleted, then each file is
+   uploaded with its size and a content type by extension (`.zip`
+   `application/zip`, `.json` `application/json`, `.pdf` `application/pdf`,
+   anything else `application/octet-stream`).
+5. **Check.** The draft's assets are read back: each file present, uploaded,
+   of its size and digest, and nothing else. A mismatch fails the run and the
+   draft stays unpublished.
+6. **Publish.** One update sets `draft: false`, `prerelease`, and `make_latest`
+   as the string `"true"` or `"false"`. A draft is invisible to
+   `releases/latest`, so no installed copy fetches a release whose assets are
+   still uploading.
+7. **Prove Latest.** With `make-latest: true`, `GET /releases/latest` must name
+   the tag, and `https://github.com/<owner>/<repo>/releases/latest/download/<file>`
+   must redirect to this tag's copy of every file and resolve to its size,
+   requested without credentials as Foundry requests it. A release that is
+   public but not served there fails the run, since the manifest address still
+   serves the previous version. With `make-latest: false`, `releases/latest`
+   must not name the tag.
+
+A re-run after any failure resumes: a draft is reused, a published and complete
+release passes straight to the Latest proof.
+
+**The token.** A fine-grained personal access token whose resource owner is
+the organisation, limited to the releasing repositories, with **Contents: read
+and write** and nothing else. It is passed by name, as `GH_RELEASE_TOKEN`; the
+API calls carry it, and the download check sends no credentials.
+
+Findings are `address: severity: message`: the API path for a refusal or a
+mismatch, the file for a local problem, the input's name for an input.
+
+Run both actions' regression tests with:
+
+```bash
+node --test actions/version-pr/version-pr.test.mjs actions/github-release/github-release.test.mjs
 ```

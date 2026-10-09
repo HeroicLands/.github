@@ -1,0 +1,10 @@
+{
+    "name": "@heroiclands/dot-github-ci",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "description": "Dependency manifest for the workflow parity test. Not published.",
+    "dependencies": {
+        "yaml": "^2.8.1"
+    }
+}

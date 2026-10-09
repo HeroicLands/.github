@@ -1,0 +1,27 @@
+name: Workflow parity
+
+# The reusable workflows exist once for each forge; this fails when what must
+# not differ between them does.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - ".github/workflows/**"
+      - ".gitea/workflows/**"
+      - "ci/**"
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-parity:
+    name: Workflow parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci --prefix ci
+      - run: node --test ci/*.test.mjs

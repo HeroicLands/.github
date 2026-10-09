@@ -1,0 +1,5 @@
+[
+    { "id": 1, "user": { "login": "tom" }, "state": "APPROVED", "dismissed": false, "stale": false, "commit_id": "18c2004" },
+    { "id": 2, "user": { "login": "ann" }, "state": "APPROVED", "dismissed": false, "stale": true, "commit_id": "0ld0000" },
+    { "id": 3, "user": { "login": "bob" }, "state": "COMMENT", "dismissed": false, "stale": false, "commit_id": "18c2004" }
+]

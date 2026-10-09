@@ -1,0 +1,494 @@
+name: Version and Release
+
+# Version a Foundry package with changesets and cut the GitHub Release that
+# Foundry installs from.
+#
+# THIS IS THE GITEA COPY, called as
+# `HeroicLands/.github/.gitea/workflows/release-foundry-package.yml@main`. The
+# GitHub-flavoured copy in `.github/workflows/` runs on GitHub;
+# `ci/workflow-parity.test.mjs` fails when the build and pack scripts, the
+# already-released guard, the version and tag computation, or the asset list
+# differ between them.
+#
+# The differences, and only these:
+#
+#   * The job runs only when the CALLER's repository variable
+#     `HL_RELEASE_ENABLED` is `true` (a called workflow reads the caller's
+#     variables), and only off GitHub.
+#   * The Version Packages pull request is made by `actions/version-pr` with
+#     `RELEASE_BOT_TOKEN`, a real user's token, so its push starts the
+#     repository's checks. The job token's events start none.
+#   * The tag is made on Gitea. A tag that already names this commit resumes
+#     the release instead of reporting nothing to release, so a re-run after a
+#     failed upload finishes the job.
+#   * The GitHub Release is made by `actions/github-release` with
+#     `GH_RELEASE_TOKEN`, once the push mirror has delivered the tag to GitHub.
+#
+#   1. A pull request declares its bump as a `.changeset/*.md` file.
+#   2. Merging it to `main` runs this workflow, which opens or updates the
+#      **Version Packages** pull request: the version bump plus the rewritten
+#      CHANGELOG.md. An unreleased state is therefore a pull request sitting in
+#      the queue, not an absence nobody can see.
+#   3. Merging *that* runs this workflow again with no changesets left, so it
+#      builds the package, packages it, and cuts the `v<version>` tag and the
+#      GitHub Release.
+#
+# The sequence lives here once and a package calls it.
+#
+# WHAT A PACKAGE STILL OWNS: its build and its packaging. This workflow runs two
+# named npm scripts and knows nothing about what either does.
+#
+# WHAT THIS WORKFLOW OWNS: the runner, the changesets gate, the
+# already-released guard, the changelog extraction, the asset guard, the
+# release channel a version is labelled with, and the Release itself. Those are
+# identical for every package and are exactly the parts that must not drift.
+#
+# The channel is org-wide rather than a per-package opt-in: PATCH RELEASES ARE
+# PRERELEASES, no exceptions. See the decide step for why the channel lives in
+# the digits.
+#
+# ---------------------------------------------------------------------------
+# The standing rule this workflow exists to enforce
+# ---------------------------------------------------------------------------
+#
+# EVERY `steps.<id>.outputs.*` REFERENCE MUST BE CHECKED AGAINST THE ACTION'S
+# `action.yml` WHENEVER THAT ACTION CHANGES.
+#
+# An output name that does not exist resolves to the **empty string**. There is
+# no error and no warning, because a workflow cannot know an action's output
+# names without resolving the action. So `if: steps.changesets.outputs.hasChangesets
+# == 'false'` becomes `'' == 'false'` — always false, the gated step is skipped
+# forever, and the job reports success while releasing nothing.
+#
+# `actions/version-pr` declares `has-changesets` and `pr-number`. Kebab-case
+# names need bracket notation — `outputs['has-changesets']` — because a hyphen
+# inside a property name is parsed as subtraction.
+
+on:
+    workflow_call:
+        inputs:
+            package-kind:
+                description: >-
+                    `system` or `module` — what Foundry calls this package. It
+                    selects the release assets, `build/dist/<kind>.zip` and
+                    `build/dist/<kind>.json`, whose names are the same word.
+                    This is the only axis on which the six callers actually
+                    differ in behaviour rather than in wording.
+                required: true
+                type: string
+            build-script:
+                description: >-
+                    The npm script that builds and verifies the tree. It must
+                    NOT begin with its own `npm ci` — dependencies are already
+                    installed by the time it runs — which is why the default is
+                    `build:noci` and not `build`: in all six repositories
+                    `build` is literally `npm ci && npm run build:noci`, so
+                    passing it would install twice. Every caller takes the
+                    default today; the input is the same named-script seam
+                    deploy-package-site.yml makes with `build:site`, kept so a
+                    package whose script is named differently can still call
+                    this.
+                required: false
+                default: build:noci
+                type: string
+            post-release-script:
+                description: >-
+                    An optional npm script run after the Release is created,
+                    in the same job, with the built tree still present. This is
+                    the seam for whatever a package does that no other package
+                    does; nothing here knows what it contains. Empty means no
+                    such step. A caller using it must grant the permissions its
+                    script needs — see the README.
+                required: false
+                default: ""
+                type: string
+            node-version:
+                description: >-
+                    Deliberately an input although all six callers pass the
+                    same value: a Node major has to be staged one repository at
+                    a time, and a shared workflow that cannot be lagged forces
+                    the bump on everyone at once.
+                required: false
+                default: "24"
+                type: string
+        outputs:
+            released:
+                description: >-
+                    `true` when this run cut a Release, `false` otherwise. Every
+                    ordinary push to main reports `false` — that is the normal
+                    outcome, not a failure. Gate a follow-on job on this.
+                value: ${{ jobs.release.outputs.released }}
+            version:
+                description: >-
+                    The version in package.json this run considered. Empty when
+                    the run only opened or updated the Version Packages pull
+                    request, since the decision step is skipped in that case.
+                value: ${{ jobs.release.outputs.version }}
+            tag:
+                description: The `v<version>` tag, set only when `released` is true.
+                value: ${{ jobs.release.outputs.tag }}
+        secrets:
+            RELEASE_BOT_TOKEN:
+                description: >-
+                    A personal access token of the release bot, a user of this
+                    forge with write access to the calling repository. It checks
+                    out the tree, pushes the version branch and the tag, and
+                    opens the Version Packages pull request, so those events
+                    start the repository's workflows as any user's would. The
+                    job token's events start none.
+                required: true
+            GH_RELEASE_TOKEN:
+                description: >-
+                    A GitHub fine-grained personal access token with Contents
+                    read and write on the GitHub repository named by
+                    `package.json#repository.url`. It creates the GitHub
+                    Release and uploads its assets.
+                required: true
+
+
+jobs:
+    release:
+        # Runs on Gitea only, and only for a repository that has switched
+        # releasing on. The GitHub-side workflow under .github/workflows is the
+        # release path on GitHub.
+        if: ${{ github.server_url != 'https://github.com' && vars.HL_RELEASE_ENABLED == 'true' }}
+        runs-on: ubuntu-latest
+
+        # Job-level rather than workflow-level: workflow-level `concurrency` in
+        # a called workflow is evaluated in the caller's context and does not
+        # behave the way it reads. Keyed by the calling repository, so six
+        # packages release independently and no package ever races itself onto
+        # the version pull request or the tag.
+        concurrency:
+            group: foundry-package-release-${{ github.repository }}
+            cancel-in-progress: false
+
+        outputs:
+            # Normalized to the literal `true`/`false` rather than passed
+            # through. When no version bump has landed the `decide` step is
+            # skipped, and a skipped step's outputs are the EMPTY STRING — so a
+            # caller writing the natural `needs.release.outputs.released ==
+            # 'false'` would find it false, which is the same shape as the
+            # stale-output-name defect this workflow exists to end.
+            released: ${{ steps.decide.outputs.release == 'true' }}
+            version: ${{ steps.decide.outputs.version }}
+            tag: ${{ steps.decide.outputs.tag }}
+
+        steps:
+            # Rejected here rather than mapped onto the nearest value: a typo
+            # would otherwise name assets that do not exist, and the run would
+            # fail four steps later with a message about a missing file rather
+            # than about the thing that was actually wrong.
+            - name: Check the package kind
+              env:
+                  KIND: ${{ inputs.package-kind }}
+              run: |
+                  case "$KIND" in
+                      system|module) echo "Releasing a Foundry $KIND." ;;
+                      *)
+                          echo "::error::package-kind must be 'system' or 'module', not '$KIND'."
+                          exit 1
+                          ;;
+                  esac
+
+            # The bot's token is persisted by the checkout, so the version
+            # branch and the tag are pushed as the bot and start workflows.
+            - name: Checkout code
+              uses: actions/checkout@v7
+              with:
+                  token: ${{ secrets.RELEASE_BOT_TOKEN }}
+                  # `changeset version` reads the history to build the
+                  # changelog, and the decision below asks the remote for
+                  # existing tags.
+                  fetch-depth: 0
+
+            - name: Setup Node
+              uses: actions/setup-node@v7
+              with:
+                  node-version: ${{ inputs.node-version }}
+                  cache: npm
+
+            - name: Install dependencies
+              run: npm ci
+
+            # With changesets pending: opens or updates the Version Packages
+            # pull request and stops. With none pending — the state right after
+            # that pull request merges — `has-changesets` is false, which is the
+            # signal that a freshly-versioned commit just landed.
+            #
+            # A package that is `private: true` must declare
+            # `privatePackages.version` in `.changeset/config.json`; without it
+            # changesets 3 versions nothing and the action fails.
+            - name: Create or update the Version Packages PR
+              id: changesets
+              uses: HeroicLands/.github/actions/version-pr@main
+              with:
+                  token: ${{ secrets.RELEASE_BOT_TOKEN }}
+                  # The repository's own npm script, which gets a shell, so a
+                  # repository refreshes its lockfile there.
+                  version-script: changeset:version
+
+            # Release only when the version pull request has merged: no
+            # changesets remain AND this version has not already been tagged.
+            # Both halves are needed — the first says a bump just landed, the
+            # second keeps an ordinary push, a re-run or a hand-cut tag from
+            # cutting the same release twice.
+            #
+            # See the standing rule at the top of this file for why the output
+            # name is bracketed and kebab-cased.
+            - name: Decide whether to release
+              id: decide
+              if: steps.changesets.outputs['has-changesets'] == 'false'
+              run: |
+                  VERSION=$(node -p "require('./package.json').version")
+                  TAG="v$VERSION"
+                  echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+                  # ----------------------------------------------------------
+                  # Which channel this version is on
+                  # ----------------------------------------------------------
+                  #
+                  # PATCH RELEASES ARE PRERELEASES. No exceptions. Only major
+                  # and minor releases are marked release.
+                  #
+                  # The digits carry a release CHANNEL here, not a severity:
+                  # `minor`/`major` goes to users, `patch` is beta and is never
+                  # meant to be consumed. 0.9.1, 0.9.2 … accumulate toward the
+                  # next user release, which one `minor` then cuts as 0.10.0.
+                  #
+                  # The channel lives in the digits rather than in a semver
+                  # prerelease component because Foundry has to sort these:
+                  # its versions are <major>.<build> and `isNewerVersion` is a
+                  # naive dot-split with a string fallback, so it has no notion
+                  # of `-beta.0` and would sort 0.9.0-beta.0 wrongly against
+                  # 0.9.0. A numeric-only scheme sorts correctly; what it
+                  # cannot do on its own is SAY which channel a version is on.
+                  # The GitHub label is what says that to a human.
+                  #
+                  # Keyed on $VERSION — the value read from package.json two
+                  # lines above — rather than on $TAG. The tag is that same
+                  # value with a `v` glued on; re-parsing it would mean
+                  # stripping a prefix this step added itself, and would make
+                  # the rule depend on the tag spelling instead of on the
+                  # version.
+                  #
+                  # STRICT, and it fails closed. Exactly three dot-separated
+                  # numeric components, no leading zeros, nothing else — so a
+                  # four-part version, a `-beta.1` suffix or any other shape
+                  # STOPS the run rather than falling through to "release".
+                  # "Release" is the outcome with consequences: it is published
+                  # the instant it exists, it takes the Latest badge, and every
+                  # installed copy updates from it. A shape this rule cannot
+                  # classify must not be resolved by guessing the irreversible
+                  # answer.
+                  if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+                      echo "::error::Version '$VERSION' is not X.Y.Z. This workflow reads the patch digit as a release channel and refuses to guess; fix package.json (or the changeset that produced it) and re-run."
+                      exit 1
+                  fi
+
+                  if [ "${BASH_REMATCH[3]}" = "0" ]; then
+                      echo "$VERSION is a minor or major release — publishing as a release, marked latest."
+                      echo "prerelease=false" >> "$GITHUB_OUTPUT"
+                      echo "make_latest=true" >> "$GITHUB_OUTPUT"
+                  else
+                      echo "$VERSION is a patch release — publishing as a prerelease, not marked latest."
+                      echo "prerelease=true" >> "$GITHUB_OUTPUT"
+                      echo "make_latest=false" >> "$GITHUB_OUTPUT"
+                  fi
+
+                  # Branch on the EXIT CODE, not on truthiness
+                  # (HeroicLands/.github#13). `git ls-remote --exit-code` has
+                  # three outcomes and the obvious `if` conflates two of them:
+                  #
+                  #     0   the tag exists
+                  #     2   no matching ref — the tag does not exist
+                  #   128   the remote could not be reached
+                  #
+                  # Under `if ... ; then A; else B; fi` both 2 and 128 take the
+                  # else branch, so a network or auth failure reads as "this
+                  # version is untagged" and the workflow proceeds to release a
+                  # version that may already have one. Every other guard in this
+                  # file fails closed; that one failed OPEN, and did the
+                  # irreversible thing on failure.
+                  #
+                  # stderr is deliberately NOT redirected: on 128 it carries the
+                  # only explanation of what went wrong.
+                  set +e
+                  git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null
+                  status=$?
+                  set -e
+
+                  # RESUME-BEGIN
+                  # A tag that already names this very commit is a release whose
+                  # upload failed after the tag was pushed: finish it rather than
+                  # report nothing to release. A tag anywhere else still means
+                  # the version is released.
+                  if [ "$status" = "0" ]; then
+                      tag_sha=$(git ls-remote --tags origin "refs/tags/$TAG^{}" | awk 'NR==1 {print $1}')
+                      [ -n "$tag_sha" ] || tag_sha=$(git ls-remote --tags origin "refs/tags/$TAG" | awk 'NR==1 {print $1}')
+                      if [ -n "$tag_sha" ] && [ "$tag_sha" = "$(git rev-parse HEAD)" ]; then
+                          echo "Tag $TAG already names this commit — resuming its release."
+                          echo "release=true" >> "$GITHUB_OUTPUT"
+                          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+                          echo "resume=true" >> "$GITHUB_OUTPUT"
+                          exit 0
+                      fi
+                  fi
+                  # RESUME-END
+
+                  case "$status" in
+                      0)
+                          echo "Tag $TAG already exists — nothing to release."
+                          echo "release=false" >> "$GITHUB_OUTPUT"
+                          ;;
+                      2)
+                          echo "Version $VERSION is untagged — releasing $TAG."
+                          echo "release=true" >> "$GITHUB_OUTPUT"
+                          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+                          ;;
+                      *)
+                          echo "::error::git ls-remote could not determine whether $TAG exists (exit $status). Refusing to release."
+                          exit 1
+                          ;;
+                  esac
+
+            - name: Build the package
+              if: steps.decide.outputs.release == 'true'
+              run: npm run ${{ inputs.build-script }}
+
+            # Fixed, not an input: all six callers spell it the same way, and an
+            # input for an axis nothing varies on is a knob that only invites
+            # divergence.
+            - name: Package the release
+              if: steps.decide.outputs.release == 'true'
+              run: npm run build:pack-release
+
+            # Written to a file rather than a step output: a version's section
+            # can be very large when many changesets have accumulated between
+            # releases, and passing that much text through an action input
+            # delivers it via the process environment, which the runner refuses
+            # to spawn past a certain size ("Argument list too long").
+            # `body_path` reads the file directly.
+            - name: Read changelog section for this version
+              if: steps.decide.outputs.release == 'true'
+              run: |
+                  mkdir -p build
+                  # Everything between the first "## " heading and the next one,
+                  # excluding the version header itself — the release title
+                  # already shows it.
+                  awk '/^## /{c++; if (c>=2) exit; next} c==1{print}' CHANGELOG.md > build/release-notes.md
+
+            # A Release is published the moment it is created and is what every
+            # installed copy of the package updates from, so an empty one cannot
+            # be taken back. A pack script that failed quietly would otherwise
+            # produce exactly that: a tag, a Release, and nothing to install.
+            # Checked here rather than trusted, in the same spirit as the
+            # completeness guard in deploy-package-site.yml.
+            - name: The assets exist
+              if: steps.decide.outputs.release == 'true'
+              env:
+                  KIND: ${{ inputs.package-kind }}
+              run: |
+                  missing=0
+                  for asset in "build/dist/$KIND.zip" "build/dist/$KIND.json"; do
+                      if [ ! -s "$asset" ]; then
+                          echo "::error::$asset is missing or empty after npm run build:pack-release."
+                          missing=1
+                      fi
+                  done
+
+                  # The content index, when the manifest advertises one (#239).
+                  # Its name is *read from the manifest* rather than assumed:
+                  # `flags.metadataUrl` is the URL every consumer fetches, so its
+                  # basename is by definition the name the asset must carry, and
+                  # deriving it a second time here would let the two disagree.
+                  #
+                  # Checked because the failure is otherwise invisible on this
+                  # side and lands weeks later in somebody else's build: a
+                  # release that advertises an index it does not carry 404s at
+                  # the consumer, which is exactly what v0.8.4 did.
+                  index_url="$(node -p "require('./build/dist/$KIND.json').flags?.metadataUrl ?? ''" 2>/dev/null || echo '')"
+                  index_asset=""
+                  if [ -n "$index_url" ]; then
+                      index_asset="build/dist/$(basename "$index_url")"
+                      if [ ! -s "$index_asset" ]; then
+                          echo "::error::$index_asset is missing or empty, but the manifest advertises it at $index_url — a release carrying that manifest would 404 for every consumer."
+                          missing=1
+                      fi
+                  fi
+
+                  # The content book, when the package builds one. Most do
+                  # not: `package-build` fences the PDF behind
+                  # `publish.site: content`, so a package publishing only a
+                  # homepage emits none and its absence is the normal case
+                  # rather than a failure. What is checked is the one thing
+                  # that can go wrong here — a book that was produced but
+                  # came out empty, which would otherwise be attached
+                  # unverified and downloaded as a 0-byte file.
+                  book_assets=()
+                  for book in build/dist/*.pdf; do
+                      [ -e "$book" ] || continue
+                      if [ ! -s "$book" ]; then
+                          echo "::error::$book is empty after npm run build:pack-release."
+                          missing=1
+                      fi
+                      book_assets+=("$book")
+                  done
+
+                  [ "$missing" -eq 0 ] || exit 1
+                  ls -l "build/dist/$KIND.zip" "build/dist/$KIND.json" ${index_asset:+"$index_asset"} "${book_assets[@]}"
+
+            # The tag is made on this forge, where the tag protection allows the
+            # bot. The push mirror carries it to GitHub.
+            - name: Tag the release
+              if: steps.decide.outputs.release == 'true' && steps.decide.outputs.resume != 'true'
+              env:
+                  TAG: ${{ steps.decide.outputs.tag }}
+              run: |
+                  git tag "$TAG" HEAD
+                  git push origin "refs/tags/$TAG"
+
+            # Waits for the mirror to deliver the tag to GitHub at this commit,
+            # then creates the GitHub Release as a draft, uploads and checks
+            # every asset, and publishes it. The tag and the assets are
+            # attached before the release is visible, so no installed copy can
+            # fetch a release whose assets are still uploading.
+            #
+            # `prerelease` and `make-latest` are set together and always
+            # explicitly: an unlabelled patch release would be published as the
+            # current one AND would take the Latest badge off the last real
+            # release. The decide step emits the literals `true` or `false`.
+            #
+            # A glob that matches nothing is not an error, so a package that
+            # builds no content index or book releases unchanged.
+            - name: Create GitHub Release
+              if: steps.decide.outputs.release == 'true'
+              uses: HeroicLands/.github/actions/github-release@main
+              with:
+                  token: ${{ secrets.GH_RELEASE_TOKEN }}
+                  tag: ${{ steps.decide.outputs.tag }}
+                  name: Release ${{ steps.decide.outputs.tag }}
+                  body-path: build/release-notes.md
+                  prerelease: ${{ steps.decide.outputs.prerelease }}
+                  make-latest: ${{ steps.decide.outputs.make_latest }}
+                  server-url: https://github.com
+                  files: |
+                      build/dist/${{ inputs.package-kind }}.zip
+                      build/dist/${{ inputs.package-kind }}.json
+                      build/dist/*.jsonl
+                      build/dist/*.pdf
+
+            # The escape hatch, run only after the Release exists. One npm
+            # script, contents unknown here — the same contract
+            # deploy-package-site.yml makes with `build:site`. It runs last so
+            # that a package's own follow-on work can never be the reason the
+            # Release was not cut.
+            #
+            # `GITEA_TOKEN` is this forge's job token, with the permissions the
+            # caller grants; `RELEASE_TAG` names the tag just released.
+            - name: Post-release
+              if: steps.decide.outputs.release == 'true' && inputs.post-release-script != ''
+              env:
+                  GITEA_TOKEN: ${{ github.token }}
+                  RELEASE_TAG: ${{ steps.decide.outputs.tag }}
+              run: npm run ${{ inputs.post-release-script }}

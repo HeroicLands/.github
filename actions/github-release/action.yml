@@ -1,0 +1,91 @@
+name: GitHub Release from a mirrored tag
+description: >-
+  Wait until the push mirror has delivered a tag to GitHub at the commit it
+  names in this checkout, then create the GitHub Release as a draft, upload and
+  check every asset, and publish it with prerelease and make_latest set
+  explicitly. A release meant to be Latest is proved to be served by
+  releases/latest/download. Never writes a git ref on GitHub, and never edits a
+  published release. The repository is read from package.json.
+
+inputs:
+  token:
+    description: >-
+      A GitHub token with Contents read and write on the release repository,
+      such as a fine-grained personal access token. The job token of another
+      forge is not one.
+    required: true
+  tag:
+    description: >-
+      The tag to release. It must exist in this checkout; its commit is the one
+      GitHub's copy must name.
+    required: true
+  name:
+    description: The release title. Empty means the tag.
+    required: false
+    default: ""
+  body-path:
+    description: A file holding the release notes. Empty means no notes.
+    required: false
+    default: ""
+  prerelease:
+    description: The literal true or false.
+    required: true
+  make-latest:
+    description: >-
+      The literal true or false. True for a prerelease is refused, since GitHub
+      never serves a prerelease as Latest.
+    required: true
+  files:
+    description: >-
+      Newline-separated globs of the files to attach, relative to the working
+      directory. A glob matching nothing is not an error; no file at all is.
+    required: true
+  wait-seconds:
+    description: How long to wait for the mirror to deliver the tag.
+    required: false
+    default: "900"
+  poll-seconds:
+    description: How long to wait between checks for the tag and for Latest.
+    required: false
+    default: "15"
+  api-url:
+    description: GitHub's REST API.
+    required: false
+    default: https://api.github.com
+  uploads-url:
+    description: GitHub's upload host for release assets.
+    required: false
+    default: https://uploads.github.com
+  server-url:
+    description: The GitHub web host that serves releases/latest/download.
+    required: false
+    default: https://github.com
+
+outputs:
+  release-url:
+    description: The published release's page.
+    value: ${{ steps.release.outputs.release-url }}
+  release-id:
+    description: The published release's numeric id.
+    value: ${{ steps.release.outputs.release-id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Publish the GitHub Release
+      id: release
+      shell: bash
+      env:
+        RELEASE_TOKEN: ${{ inputs.token }}
+        RELEASE_TAG: ${{ inputs.tag }}
+        RELEASE_NAME: ${{ inputs.name }}
+        RELEASE_BODY_PATH: ${{ inputs.body-path }}
+        RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+        RELEASE_MAKE_LATEST: ${{ inputs.make-latest }}
+        RELEASE_FILES: ${{ inputs.files }}
+        RELEASE_WAIT_SECONDS: ${{ inputs.wait-seconds }}
+        RELEASE_POLL_SECONDS: ${{ inputs.poll-seconds }}
+        RELEASE_API_URL: ${{ inputs.api-url }}
+        RELEASE_UPLOADS_URL: ${{ inputs.uploads-url }}
+        RELEASE_SERVER_URL: ${{ inputs.server-url }}
+      run: node "$GITHUB_ACTION_PATH/github-release.mjs"

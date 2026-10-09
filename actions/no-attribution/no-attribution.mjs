@@ -13,8 +13,9 @@
 
 import { readFileSync } from "node:fs";
 import { attribution } from "./attribution.mjs";
+import { ApiError, forgeOf, readAll } from "../lib/forge.mjs";
 
-const API = "https://api.github.com";
+const FORGE = forgeOf();
 const REPO = process.env.GITHUB_REPOSITORY;
 const TOKEN = process.env.GITHUB_TOKEN;
 const EVENT_PATH = process.env.GITHUB_EVENT_PATH;
@@ -76,38 +77,25 @@ function pullRequest() {
 }
 
 /**
- * The pull request's commit messages, paginated.
+ * The pull request's commit messages, every page of them.
  *
  * A failed read exits rather than reporting success on the subjects it did
  * manage to read: the commit messages are the ones that survive the merge, so
  * a run that skipped them has not checked the thing that matters most.
  */
 async function commitMessages(number) {
-    const headers = {
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        Authorization: `Bearer ${TOKEN}`,
-    };
-    const commits = [];
-    for (let page = 1; ; page++) {
-        const res = await fetch(
-            `${API}/repos/${REPO}/pulls/${number}/commits?per_page=100&page=${page}`,
-            { headers },
-        );
-        if (!res.ok) {
-            report({
-                file: `pull/${number}/commits`,
-                message:
-                    `could not be read: ${res.status} ${await res.text()}. ` +
-                    "The token needs `contents: read` and `pull-requests: read`",
-            });
-            process.exit(1);
-        }
-        const batch = await res.json();
-        for (const entry of batch) {
-            commits.push({ sha: entry.sha, message: entry.commit.message });
-        }
-        if (batch.length < 100) return commits;
+    try {
+        const batch = await readAll(FORGE, `/repos/${REPO}/pulls/${number}/commits`, TOKEN);
+        return batch.map((entry) => ({ sha: entry.sha, message: entry.commit.message }));
+    } catch (error) {
+        if (!(error instanceof ApiError)) throw error;
+        report({
+            file: `pull/${number}/commits`,
+            message:
+                `could not be read: ${error.status} ${error.body}. ` +
+                "The token needs `contents: read` and `pull-requests: read`",
+        });
+        process.exit(1);
     }
 }
 

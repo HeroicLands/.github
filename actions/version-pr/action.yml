@@ -1,0 +1,76 @@
+name: Version Packages pull request
+description: >-
+  With changesets pending, run the repository's version script on the release
+  branch, make its result one commit on the checked-out commit, force-push it
+  with the bot's token, open or update the Version Packages pull request, and
+  schedule its squash merge for when its checks succeed. With none pending,
+  report has-changesets as false and change nothing. Uses the Gitea API at the
+  runner's GITHUB_API_URL.
+
+inputs:
+  token:
+    description: >-
+      The bot's personal access token on the forge, with write access to the
+      repository. The push and the pull request are made with it, so they start
+      the repository's workflows; the job token's events start none.
+    required: true
+  version-script:
+    description: >-
+      The npm script that versions the packages and refreshes the lockfile.
+      Run with npm, so it gets a shell.
+    required: false
+    default: changeset:version
+  branch:
+    description: The release branch the pull request is opened from.
+    required: false
+    default: changeset-release/main
+  base:
+    description: The branch the pull request merges into.
+    required: false
+    default: main
+  title:
+    description: The pull request's title.
+    required: false
+    default: "chore(release): version packages"
+  commit-message:
+    description: The message of the one commit on the release branch.
+    required: false
+    default: "chore(release): version packages"
+  author-name:
+    description: >-
+      The commit's author and committer name. Empty means the token's login.
+    required: false
+    default: ""
+  author-email:
+    description: >-
+      The commit's author and committer email. Empty means the token account's
+      email.
+    required: false
+    default: ""
+
+outputs:
+  has-changesets:
+    description: >-
+      The literal true when changesets were pending and the pull request was
+      opened or updated, false when none were pending.
+    value: ${{ steps.version-pr.outputs.has-changesets }}
+  pr-number:
+    description: The Version Packages pull request's number, set when has-changesets is true.
+    value: ${{ steps.version-pr.outputs.pr-number }}
+
+runs:
+  using: composite
+  steps:
+    - name: Open or update the Version Packages pull request
+      id: version-pr
+      shell: bash
+      env:
+        VERSION_PR_TOKEN: ${{ inputs.token }}
+        VERSION_SCRIPT: ${{ inputs.version-script }}
+        RELEASE_BRANCH: ${{ inputs.branch }}
+        BASE_BRANCH: ${{ inputs.base }}
+        PR_TITLE: ${{ inputs.title }}
+        COMMIT_MESSAGE: ${{ inputs.commit-message }}
+        AUTHOR_NAME: ${{ inputs.author-name }}
+        AUTHOR_EMAIL: ${{ inputs.author-email }}
+      run: node "$GITHUB_ACTION_PATH/version-pr.mjs"

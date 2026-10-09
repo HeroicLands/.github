@@ -71,3 +71,72 @@ test("a failed read fails the check rather than passing on nothing", () => {
     assert.equal(out.status, 1);
     assert.match(out.stderr, /^pull\/7\/files: error: could not be read: 403/m);
 });
+
+// Gitea-shaped input: its own review vocabulary, a page size of 50, and
+// event payloads whose `action` and review fields are Gitea's words.
+
+import { readFileSync } from "node:fs";
+import { FORGE_ENV } from "../lib/fake-forge.mjs";
+
+const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8"));
+const fakeForge = new URL("../lib/fake-forge.mjs", import.meta.url).href;
+
+/** Run the action on a forge with every list served in that forge's paging style. */
+function runOn(style, { event, files = [], reviews = [] }) {
+    const dir = mkdtempSync(join(tmpdir(), "changesets-forge-"));
+    try {
+        writeFileSync(join(dir, "event.json"), JSON.stringify(event));
+        writeFileSync(join(dir, "mock.mjs"), `import { pagedFetch } from ${JSON.stringify(fakeForge)};
+            globalThis.fetch = pagedFetch({ "/reviews": ${JSON.stringify(reviews)}, "/files": ${JSON.stringify(files)} }, ${JSON.stringify(style)});`);
+        return spawnSync(process.execPath, ["--import", join(dir, "mock.mjs"), action.pathname], {
+            encoding: "utf8",
+            env: { ...process.env, ...FORGE_ENV[style], GITHUB_TOKEN: "fixture", GITHUB_REPOSITORY: "fixture/fixture", GITHUB_EVENT_PATH: join(dir, "event.json"), RELEASE_BRANCH: "" },
+        });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+test("Gitea: REQUEST_CHANGES withdraws an approval and a dismissed review no longer counts", () => {
+    const r = (login, state, extra = {}) => ({ user: { login }, state, commit_id: "head", dismissed: false, ...extra });
+    assert.equal(releaseReview([r("tom", "APPROVED"), r("tom", "REQUEST_CHANGES")], "head").approved, false);
+    assert.equal(releaseReview([r("tom", "APPROVED", { dismissed: true })], "head").approved, false);
+    assert.equal(releaseReview([r("tom", "APPROVED", { dismissed: true }), r("tom", "APPROVED")], "head").approved, true);
+    assert.equal(releaseReview([r("tom", "APPROVED"), r("tom", "COMMENT")], "head").approved, true);
+    assert.equal(releaseReview([r("tom", "REQUEST_CHANGES"), r("tom", "APPROVED")], "head").approved, true);
+});
+
+test("Gitea: the recorded reviews approve the head, and the stale approval is named", () => {
+    const reviews = fixture("gitea-reviews.json");
+    assert.deepEqual(releaseReview(reviews, "18c2004"), { approved: true, stale: ["ann"] });
+    assert.deepEqual(releaseReview(reviews.slice(1), "18c2004"), { approved: false, stale: ["ann"] });
+});
+
+test("the release pull request passes on each forge's recorded approval", () => {
+    const event = fixture("gitea-event.json");
+    const gitea = runOn("gitea", { event, reviews: fixture("gitea-reviews.json") });
+    assert.equal(gitea.status, 0, gitea.stderr);
+    assert.match(gitea.stdout, /approved on its head commit 18c2004/);
+    const github = runOn("github", {
+        event: { ...event, action: "synchronize" },
+        reviews: [{ user: { login: "tom" }, state: "APPROVED", commit_id: "18c2004" }],
+    });
+    assert.equal(github.status, 0, github.stderr);
+});
+
+test("Gitea: a dismissed approval fails the release pull request", () => {
+    const reviews = [{ ...fixture("gitea-reviews.json")[0], dismissed: true }];
+    const out = runOn("gitea", { event: fixture("gitea-event.json"), reviews });
+    assert.equal(out.status, 1);
+    assert.match(out.stderr, /no approving review names its head commit/);
+});
+
+test("a changeset on the second page of a Gitea file list is found", () => {
+    const event = { pull_request: { number: 7, head: { ref: "feature/1_x", sha: "head" } } };
+    const filler = Array.from({ length: 58 }, (_, i) => ({ filename: `src/f${i}.js`, status: "modified" }));
+    const files = [cs("one"), ...filler, cs("two")];
+    for (const style of ["gitea", "github"]) {
+        const out = runOn(style, { event, files });
+        assert.equal(out.status, 1, style);
+        assert.match(out.stderr, /^\.changeset\/two\.md: error: one of 2 changesets/m, style);
+    }
+    assert.equal(runOn("gitea", { event, files: [cs("one"), ...filler] }).status, 0);
+});

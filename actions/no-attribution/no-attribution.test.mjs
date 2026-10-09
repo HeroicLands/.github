@@ -78,3 +78,38 @@ test("fails a later commit page rather than accepting a partial read", () => {
     assert.match(result.stderr, /pull\/123\/commits: error: could not be read: 403/);
     assert.doesNotMatch(result.stdout, /is clean/);
 });
+
+// Gitea-shaped input: a page size of 50, newest commits first, and an event
+// payload carrying Gitea's own action word.
+
+import { FORGE_ENV } from "../lib/fake-forge.mjs";
+
+const fakeForge = new URL("../lib/fake-forge.mjs", import.meta.url).href;
+
+function runOn(style, { messages, actionName }) {
+    const dir = mkdtempSync(join(tmpdir(), "attribution-forge-"));
+    try {
+        writeFileSync(join(dir, "event.json"), JSON.stringify({ action: actionName, pull_request: { number: 123, title: "Update guard", body: null } }));
+        const commits = messages.map((message, i) => ({ sha: `fixture${i}`, commit: { message } }));
+        writeFileSync(join(dir, "mock.mjs"), `import { pagedFetch } from ${JSON.stringify(fakeForge)};
+            globalThis.fetch = pagedFetch({ "/commits": ${JSON.stringify(commits)} }, ${JSON.stringify(style)});`);
+        return spawnSync(process.execPath, ["--import", join(dir, "mock.mjs"), action.pathname], {
+            encoding: "utf8", env: { ...process.env, ...FORGE_ENV[style], GITHUB_TOKEN: "fixture", GITHUB_REPOSITORY: "fixture/fixture", GITHUB_EVENT_PATH: join(dir, "event.json") },
+        });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+for (const [style, actionName] of [["gitea", "synchronized"], ["github", "synchronize"]]) {
+    test(`${style}: a commit past the first page is scanned`, () => {
+        const messages = Array(60).fill("Human change");
+        messages[55] = rejected[0];
+        const result = runOn(style, { messages, actionName });
+        assert.equal(result.status, 1, result.stdout);
+        assert.ok(result.stderr.includes("commit/fixture55:1:1: error:"));
+    });
+    test(`${style}: sixty clean commits are all read and pass`, () => {
+        const result = runOn(style, { messages: Array(60).fill("Human change"), actionName });
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /60 commit message\(s\)/);
+    });
+}
