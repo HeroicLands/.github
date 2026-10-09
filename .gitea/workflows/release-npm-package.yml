@@ -1,0 +1,126 @@
+name: Version and Tag
+
+# Version an npm package with changesets and tag the version commit. Called as
+# `HeroicLands/.github/.gitea/workflows/release-npm-package.yml@main`.
+#
+# THIS WORKFLOW NEVER PUBLISHES. npm trusted publishing needs an OIDC identity
+# Gitea cannot mint, and the trusted publisher on npm is bound to the package's
+# GitHub repository and its `.github/workflows/release.yml`. That workflow, in
+# each package repository, runs on GitHub when the push mirror delivers the tag
+# made here: it checks the tag, publishes with provenance and creates the
+# GitHub Release. This file therefore has no GitHub counterpart in
+# `.github/workflows/`, holds no npm or GitHub credential, and
+# `ci/workflow-parity.test.mjs` fails if it gains one.
+#
+#   1. A pull request declares its bump as a `.changeset/*.md` file.
+#   2. Merging it to `main` runs this workflow, which opens or updates the
+#      **Version Packages** pull request through `actions/version-pr`.
+#   3. Merging *that* runs this workflow again with no changesets left, so
+#      `actions/release-tag` pushes `v<version>` at the commit that set the
+#      version. An ordinary push to `main` finds that tag and does nothing.
+#
+# The job runs only when the CALLER's repository variable `HL_RELEASE_ENABLED`
+# is `true` (a called workflow reads the caller's variables), and only off
+# GitHub.
+#
+# `actions/version-pr` declares `has-changesets` and `pr-number`;
+# `actions/release-tag` declares `version`, `tag`, `commit` and `pushed`. An
+# output name that does not exist reads as the empty string with no error, so
+# `ci/workflow-parity.test.mjs` checks every reference below against the
+# action's `action.yml`. Kebab-case names need bracket notation, because a
+# hyphen inside a property name is parsed as subtraction.
+
+on:
+    workflow_call:
+        inputs:
+            node-version:
+                description: >-
+                    The Node major the versioning runs under. An input so a
+                    Node major can be staged one repository at a time.
+                required: false
+                default: "24"
+                type: string
+        outputs:
+            tagged:
+                description: >-
+                    `true` when this run pushed the `v<version>` tag, which
+                    starts the publish on GitHub; `false` otherwise. Every
+                    ordinary push to main reports `false`.
+                value: ${{ jobs.release.outputs.tagged }}
+            version:
+                description: >-
+                    The version in package.json, set when no changesets were
+                    pending.
+                value: ${{ jobs.release.outputs.version }}
+            tag:
+                description: The `v<version>` tag, set when no changesets were pending.
+                value: ${{ jobs.release.outputs.tag }}
+        secrets:
+            RELEASE_BOT_TOKEN:
+                description: >-
+                    A personal access token of the release bot, a user of this
+                    forge with write access to the calling repository. It checks
+                    out the tree, pushes the version branch and the tag, and
+                    opens the Version Packages pull request, so those events
+                    start the repository's workflows and the push mirror
+                    carries the tag to GitHub.
+                required: true
+
+jobs:
+    release:
+        # Runs on Gitea only, and only for a repository that has switched
+        # releasing on.
+        if: ${{ github.server_url != 'https://github.com' && vars.HL_RELEASE_ENABLED == 'true' }}
+        runs-on: ubuntu-latest
+
+        # Job-level: workflow-level `concurrency` in a called workflow is
+        # evaluated in the caller's context. Keyed by the calling repository,
+        # so no package races itself onto the version pull request or the tag.
+        concurrency:
+            group: npm-package-release-${{ github.repository }}
+            cancel-in-progress: false
+
+        outputs:
+            # The literal `true`/`false`: a skipped step's outputs are the
+            # empty string, which a caller comparing with 'false' would misread.
+            tagged: ${{ steps.tag.outputs.pushed == 'true' }}
+            version: ${{ steps.tag.outputs.version }}
+            tag: ${{ steps.tag.outputs.tag }}
+
+        steps:
+            # The bot's token is persisted by the checkout, so the version
+            # branch and the tag are pushed as the bot.
+            - name: Checkout code
+              uses: actions/checkout@v7
+              with:
+                  token: ${{ secrets.RELEASE_BOT_TOKEN }}
+                  # `changeset version` reads the history to build the
+                  # changelog, and the version commit is found by walking it.
+                  fetch-depth: 0
+
+            - name: Setup Node
+              uses: actions/setup-node@v7
+              with:
+                  node-version: ${{ inputs.node-version }}
+                  cache: npm
+
+            - name: Install dependencies
+              run: npm ci
+
+            # With changesets pending: opens or updates the Version Packages
+            # pull request and stops. With none pending, `has-changesets` is
+            # false and the tag step runs.
+            - name: Create or update the Version Packages PR
+              id: changesets
+              uses: HeroicLands/.github/actions/version-pr@main
+              with:
+                  token: ${{ secrets.RELEASE_BOT_TOKEN }}
+                  version-script: changeset:version
+
+            # Pushes `v<version>` at the commit that set the version, once. A
+            # tag that already exists is left alone, and a remote that cannot
+            # be read fails the run.
+            - name: Tag the version commit
+              id: tag
+              if: steps.changesets.outputs['has-changesets'] == 'false'
+              uses: HeroicLands/.github/actions/release-tag@main

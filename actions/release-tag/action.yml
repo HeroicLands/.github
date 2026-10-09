@@ -1,0 +1,32 @@
+name: Tag the version commit
+description: >-
+  Tag the commit that set package.json's version with v<version> and push the
+  tag to the checkout's remote, once. The commit is found on the first-parent
+  history of HEAD, so a later push to main that leaves the version alone does
+  not move the tag. A tag that already exists is left where it is. Refuses a
+  tree with pending changesets, a version that is not X.Y.Z with an optional
+  prerelease, and a remote it cannot read. Writes nothing but the one tag.
+
+outputs:
+  version:
+    description: The version package.json declares.
+    value: ${{ steps.release-tag.outputs.version }}
+  tag:
+    description: The tag, v<version>.
+    value: ${{ steps.release-tag.outputs.tag }}
+  commit:
+    description: The commit that set the version, which the tag names.
+    value: ${{ steps.release-tag.outputs.commit }}
+  pushed:
+    description: >-
+      The literal true when this run created and pushed the tag, false when the
+      tag already existed.
+    value: ${{ steps.release-tag.outputs.pushed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Tag the version commit
+      id: release-tag
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/release-tag.mjs"

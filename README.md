@@ -586,30 +586,14 @@ knows what that script contains, which is the point; it runs **after** the
 Release, so a package's own follow-on work can never be why the Release was not
 cut.
 
-### What is not here: the two npm publishers
+### What is not here: the npm packages
 
-`package-build` and `heroiclands-hugo-theme` publish to npm, and their release
-workflows are a different shape — `changesets/action` is given a
-`publish-script` and does the tag, the Release and the `npm publish` itself, so
-there is no decision step, no packaging and no assets. They are not callers of
-this workflow and are not made one by it.
-
-**The question that blocked them is answered, though, and the answer is the
-encouraging one.** npm Trusted Publishing authorizes the workflow that
-*initiates* the run, not the reusable one it calls: npm's own documentation
-notes that with `workflow_call` "validation checks the calling workflow's name
-instead of the workflow that actually contains the publish command". So a
-publisher can move its body into a reusable workflow **without reconfiguring
-its trusted publisher on npm**, provided:
-
-- the caller keeps the filename npm is already configured with (`release.yml`
-  — the file name is load-bearing, and both repositories' workflows already say
-  so at the top); and
-- `id-token: write` is granted in **both** the caller and the called workflow.
-
-That removes the risk [#12](https://github.com/HeroicLands/.github/issues/12)
-flagged as the blocker. Centralising those two is still a separate change with
-its own shape, and it should follow the six, not lead them.
+`package-build` and `content-language-server` publish to npm, not to a GitHub
+Release that Foundry installs from, so they are not callers of this workflow.
+They version and tag on Gitea through
+[`release-npm-package.yml`](#releasing-an-npm-package-from-gitea), and publish
+from their own `.github/workflows/release.yml` on GitHub when the push mirror
+delivers the tag.
 
 ### Verifying a caller
 
@@ -650,6 +634,7 @@ workflows or actions. The shared actions are referenced in the bare form,
 | --- | --- | --- | --- |
 | `release-foundry-package.yml` | `release` | `github.server_url != 'https://github.com' && vars.HL_RELEASE_ENABLED == 'true'` | `RELEASE_BOT_TOKEN`, `GH_RELEASE_TOKEN` |
 | `deploy-package-site.yml` | `deploy` | `github.server_url != 'https://github.com' && vars.HL_DEPLOY_ENABLED == 'true'` | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` |
+| `release-npm-package.yml` | `release` | `github.server_url != 'https://github.com' && vars.HL_RELEASE_ENABLED == 'true'` | `RELEASE_BOT_TOKEN` |
 
 A called workflow reads the **caller's** repository variables, so a repository
 turns releasing on by setting its own `HL_RELEASE_ENABLED` to `true` and
@@ -657,7 +642,7 @@ deploying on by setting `HL_DEPLOY_ENABLED` to `true`. A repository with neither
 variable runs neither job. The secrets are organisation-level on Gitea and are
 passed by name; `secrets: inherit` is never used.
 
-Both jobs run on `ubuntu-latest`, a host-mode runner that already carries Node,
+Every job runs on `ubuntu-latest`, a host-mode runner that already carries Node,
 Hugo, `yq`, `jq` and `curl`. Nothing is installed into a system path. The job
 token never starts other workflows, so every push and pull request that has to
 run checks is made with `RELEASE_BOT_TOKEN`.
@@ -716,6 +701,55 @@ the GitHub copy above. The release sequence:
 | `RELEASE_BOT_TOKEN` | the release bot's personal access token on Gitea, with write access to the repository |
 | `GH_RELEASE_TOKEN` | a GitHub fine-grained personal access token with Contents read and write on the releasing repositories |
 
+### Releasing an npm package from Gitea
+
+```yaml
+# .gitea/workflows/release.yml — in the package repository
+name: Version and Tag
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    uses: HeroicLands/.github/.gitea/workflows/release-npm-package.yml@main
+    secrets:
+      RELEASE_BOT_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
+```
+
+This workflow versions and tags. It never publishes: npm trusted publishing
+needs an OIDC identity that Gitea cannot mint. Publishing happens on GitHub, in
+the package's own `.github/workflows/release.yml`, the file npm's trusted
+publisher is bound to. It has no copy in `.github/workflows/` here.
+
+1. **Version Packages.** With changesets pending, `actions/version-pr` opens or
+   updates the pull request, exactly as for a Foundry package.
+2. **Tag.** With none pending, `actions/release-tag` pushes `v<version>` at the
+   commit that set the version, using `RELEASE_BOT_TOKEN`. A tag that already
+   exists is left where it is, so an ordinary push to `main` does nothing.
+3. **Mirror.** The push mirror carries the tag to GitHub within seconds.
+4. **Publish, on GitHub.** The package's `release.yml` runs on that tag push.
+   It refuses a tag whose commit is not on `main` or whose name is not
+   `v<version>` of the tagged `package.json`, skips the publish when npm
+   already has the version, and otherwise runs the tests and
+   `npm publish --provenance` through trusted publishing. It then creates the
+   GitHub Release from the version's CHANGELOG section, unless one exists.
+
+| Input | Default | |
+| --- | --- | --- |
+| `node-version` | `24` | the Node major the versioning runs under |
+
+| Output | |
+| --- | --- |
+| `tagged` | `true` when this run pushed the tag, `false` otherwise |
+| `version` | the version in `package.json`, set when no changesets were pending |
+| `tag` | `v<version>`, set when no changesets were pending |
+
 ### Deploying from Gitea
 
 ```yaml
@@ -766,13 +800,20 @@ its `github.com` guard, that the Gitea copies hold no GitHub-only release
 machinery, and that no expression builds a link from `github.server_url`, which
 on Gitea is the runner's internal address.
 
+Every step output a Gitea workflow reads from a shared action is checked
+against that action's `action.yml`, and a kebab-case name must use bracket
+notation. `release-npm-package.yml` has no GitHub copy; the test holds it to its
+gate, to the two shared actions in order, to `RELEASE_BOT_TOKEN` as its only
+secret, and to never publishing: no `npm publish`, `deploy:npm`,
+`changeset publish`, `id-token`, npm token or `registry-url`.
+
 ```bash
 npm ci --prefix ci
 node --test actions/*/*.test.mjs ci/*.test.mjs
 ```
 
-A pull request that touches either workflow directory or `ci/` runs the test
-through `.gitea/workflows/workflow-parity.yml`.
+A pull request that touches either workflow directory, `ci/` or `actions/` runs
+the test and every action's tests through `.gitea/workflows/workflow-parity.yml`.
 
 ## `SECURITY.md`
 
@@ -1201,6 +1242,44 @@ the method, the status and the forge's answer, as in
 `repos/HeroicLands/x/pulls: error: POST answered 403: …`; a failing git
 command or version script names what ran and its exit status. The token is
 never printed.
+
+## `actions/release-tag`
+
+Tags the commit that set `package.json`'s version with `v<version>` and pushes
+that one tag to the checkout's remote, with the checkout's credentials.
+
+```yaml
+# a step in the release job, after a checkout with the bot's token and
+# `fetch-depth: 0`
+- name: Tag the version commit
+  id: tag
+  if: steps.changesets.outputs['has-changesets'] == 'false'
+  uses: HeroicLands/.github/actions/release-tag@main
+```
+
+| Output | |
+| --- | --- |
+| `version` | the version `package.json` declares |
+| `tag` | `v<version>` |
+| `commit` | the commit that set the version, which the tag names |
+| `pushed` | `true` when this run created and pushed the tag, `false` when it already existed |
+
+**What a run does.**
+
+1. **Nothing pending.** A pending changeset fails the run: a tree that has not
+   been versioned is never tagged.
+2. **The version.** It must be `X.Y.Z` with no leading zeros and an optional
+   prerelease suffix. Build metadata is refused.
+3. **The version commit.** The newest commit on the first-parent history of
+   `HEAD` that touches `package.json` and whose parent declared another version:
+   the squash-merged Version Packages pull request. A later commit that leaves
+   the version alone does not move it. A shallow checkout cannot answer this
+   and fails, naming `fetch-depth: 0`.
+4. **The remote.** `git ls-remote --exit-code` decides. An existing tag is left
+   where it is; one that names another commit is reported as a warning. A
+   remote that cannot be read fails the run instead of reading as "untagged".
+5. **Push.** The tag is pushed straight from the commit,
+   `git push origin <commit>:refs/tags/v<version>`, and nothing else is written.
 
 ## `actions/github-release`
 

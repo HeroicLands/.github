@@ -13,7 +13,7 @@
 
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import { parse } from "yaml";
 
 const root = new URL("../", import.meta.url);
@@ -259,10 +259,134 @@ test("the pull-request workflows are the same file on both forges", () => {
     }
 });
 
-test("every Gitea workflow file has a GitHub counterpart, apart from the parity check itself", () => {
+/**
+ * Gitea workflows with no GitHub copy: the parity check itself, and the npm
+ * release, whose GitHub half is each package's own `release.yml` because npm's
+ * trusted publisher is bound to that file.
+ */
+const GITEA_ONLY = ["workflow-parity.yml", "release-npm-package.yml"];
+
+test("every Gitea workflow file has a GitHub counterpart, apart from the Gitea-only ones", () => {
     const names = (forge) => readdirSync(new URL(`${forge}/workflows/`, root)).sort();
     assert.deepEqual(
-        names(GITEA).filter((name) => name !== "workflow-parity.yml"),
+        names(GITEA).filter((name) => !GITEA_ONLY.includes(name)),
         names(GITHUB),
     );
+    for (const name of GITEA_ONLY) assert.ok(names(GITEA).includes(name), `${name} is missing`);
+});
+
+/** The outputs an `actions/<name>/action.yml` in this repository declares. */
+const actionOutputs = (name) =>
+    Object.keys(parse(readFileSync(new URL(`actions/${name}/action.yml`, root), "utf8")).outputs ?? {});
+
+test("every step output a Gitea workflow reads is one the shared action declares", () => {
+    // An output name that does not exist reads as the empty string with no
+    // error, so a renamed output silently skips every step gated on it.
+    let checked = 0;
+    for (const file of readdirSync(new URL(`${GITEA}/workflows/`, root))) {
+        const workflow = load(GITEA, file);
+        // Comments may quote a wrong spelling as the example of what breaks.
+        const source = text(GITEA, file)
+            .split("\n")
+            .filter((line) => !/^\s*#/.test(line))
+            .join("\n");
+        for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+            const shared = new Map();
+            for (const step of job.steps ?? []) {
+                const match = /^HeroicLands\/\.github\/actions\/([a-z-]+)@main$/.exec(step.uses ?? "");
+                if (match && step.id) shared.set(step.id, match[1]);
+            }
+            for (const [id, action] of shared) {
+                const declared = actionOutputs(action);
+                const pattern = new RegExp(`steps\\.${id}\\.outputs(?:\\.([A-Za-z0-9_]+)|\\['([^']+)'\\])`, "g");
+                for (const m of source.matchAll(pattern)) {
+                    const name = m[1] ?? m[2];
+                    assert.ok(declared.includes(name), `${file} (${jobName}) reads steps.${id}.outputs ${name}, which actions/${action} does not declare`);
+                    if (name.includes("-")) assert.equal(m[2], name, `${file} reads the kebab-case output ${name} without bracket notation`);
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert.ok(checked > 0, "no shared action output was checked");
+});
+
+describe("release-npm-package.yml", () => {
+    const file = "release-npm-package.yml";
+    const workflow = load(GITEA, file);
+    const source = text(GITEA, file);
+    const code = source
+        .split("\n")
+        .filter((line) => !/^\s*#/.test(line))
+        .join("\n");
+    const steps = stepsByName(workflow, "release");
+
+    test("its one job carries the Gitea gate and nothing else runs", () => {
+        assert.deepEqual(Object.keys(workflow.jobs), ["release"]);
+        assert.equal(expression(workflow.jobs.release.if), `github.server_url != ${HOST} && vars.HL_RELEASE_ENABLED == 'true'`);
+        assert.deepEqual(Object.keys(workflow.on), ["workflow_call"]);
+    });
+
+    test("it never publishes and holds no npm or GitHub credential", () => {
+        for (const banned of [
+            /npm\s+publish/,
+            /deploy:npm/,
+            /changeset\s+publish/,
+            /id-token/,
+            /NPM_TOKEN|NODE_AUTH_TOKEN/,
+            /registry-url/,
+            /GH_RELEASE_TOKEN|github-release/,
+            /secrets:\s*inherit/,
+            /changesets\/action|softprops|create-github-app-token|RELEASE_APP/,
+        ]) {
+            assert.doesNotMatch(code, banned, `${file} matches ${banned}`);
+        }
+        assert.deepEqual(Object.keys(workflow.on.workflow_call.secrets), ["RELEASE_BOT_TOKEN"]);
+        const used = new Set([...code.matchAll(/secrets\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]));
+        assert.deepEqual([...used], ["RELEASE_BOT_TOKEN"]);
+        for (const step of steps.values()) {
+            assert.ok(!/\bnpm\b(?!\s+ci\b)/.test(step.run ?? ""), `"${step.name}" runs npm for something other than ci`);
+        }
+    });
+
+    test("it versions, then tags only when no changesets are pending", () => {
+        assert.deepEqual([...steps.keys()], [
+            "Checkout code",
+            "Setup Node",
+            "Install dependencies",
+            "Create or update the Version Packages PR",
+            "Tag the version commit",
+        ]);
+        const versionPr = steps.get("Create or update the Version Packages PR");
+        assert.equal(versionPr.uses, "HeroicLands/.github/actions/version-pr@main");
+        assert.equal(versionPr.id, "changesets");
+        assert.equal(versionPr.with.token, "${{ secrets.RELEASE_BOT_TOKEN }}");
+        const tag = steps.get("Tag the version commit");
+        assert.equal(tag.uses, "HeroicLands/.github/actions/release-tag@main");
+        assert.equal(tag.id, "tag");
+        assert.equal(expression(tag.if), "steps.changesets.outputs['has-changesets'] == 'false'");
+        assert.equal(steps.get("Install dependencies").run, "npm ci");
+    });
+
+    test("the checkout takes the bot token and the whole history", () => {
+        const checkout = steps.get("Checkout code");
+        assert.equal(checkout.with.token, "${{ secrets.RELEASE_BOT_TOKEN }}");
+        assert.equal(checkout.with["fetch-depth"], 0);
+    });
+
+    test("it shares the Foundry release's concurrency shape and names no host", () => {
+        assert.deepEqual(workflow.jobs.release.concurrency, {
+            group: "npm-package-release-${{ github.repository }}",
+            "cancel-in-progress": false,
+        });
+        assert.equal(workflow.jobs.release["runs-on"], "ubuntu-latest");
+        for (const [, ref] of code.matchAll(/^\s*(?:-\s*)?uses:\s*(\S+)/gm)) {
+            assert.ok(!/^https?:/.test(ref), `uses: ${ref} names a host; use the bare owner/repo form`);
+        }
+        for (const [, body] of code.matchAll(/\$\{\{([^}]*)\}\}/g)) {
+            if (/server_url|api_url/.test(body)) {
+                assert.equal(expression(body), `github.server_url != ${HOST} && vars.HL_RELEASE_ENABLED == 'true'`);
+            }
+        }
+    });
 });
