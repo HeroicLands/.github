@@ -550,6 +550,7 @@ jobs:
                   MODE: ${{ steps.pkg.outputs.mode }}
                   MIN: ${{ steps.pkg.outputs.min }}
                   MAX: ${{ steps.pkg.outputs.max }}
+                  REPOSITORY: ${{ github.repository }}
               run: |
                   set -euo pipefail
                   dir="${SITE}/${PKG}"
@@ -634,6 +635,14 @@ jobs:
                   # primary: it must not pick a nested copy over the top-level
                   # one.
                   pbmanifest="node_modules/@heroiclands/package-build/package.json"
+                  #
+                  # package-build publishing its own documentation builds with
+                  # its own `bin/package-build.mjs` and installs no copy of
+                  # itself, so there its own `package.json` is the version in
+                  # use. Every other repository reads the installed package.
+                  if [ "$REPOSITORY" = "HeroicLands/package-build" ]; then
+                      pbmanifest="package.json"
+                  fi
                   if [ ! -f "$pbmanifest" ]; then
                       pbmanifest=$(find node_modules -path '*/@heroiclands/package-build/package.json' -print 2>/dev/null | head -n 1 || true)
                   fi
@@ -753,6 +762,25 @@ jobs:
                       echo "${dir} carries no addressed landing, and package-build ${pbver} does" \
                            "not publish one: ${dir}/index.html is this package's landing and is" \
                            "counted as a page."
+                  fi
+
+                  # THE LANDING CARRIES CONTENT. Hugo renders a site root whether
+                  # or not a homepage was written — chrome around an empty
+                  # `<main>` — so a build that emitted no landing can still leave
+                  # a non-empty `index.html` where the landing belongs, and the
+                  # size check above cannot tell it from a page. An empty
+                  # `<main>` (nothing but whitespace and comments) is that
+                  # signature. A page with no `<main>` element is not judged.
+                  if ! node -e '
+                      const html = require("fs").readFileSync(process.argv[1], "utf8");
+                      const main = /<main\b[^>]*>([\s\S]*?)<\/main>/i.exec(html);
+                      if (main && main[1].replace(/<!--[\s\S]*?-->/g, "").trim() === "") process.exit(3);
+                  ' "$landing"; then
+                      echo "::error::${landing} has an empty <main>: it is the site root Hugo" \
+                           "generates, not a landing page. The build emitted no landing, and" \
+                           "deploying this would replace the live site with a blank page. Find" \
+                           "out why the landing was not written; do not raise or bypass this."
+                      exit 1
                   fi
 
                   # A LANDING NOTHING ROUTES TO IS THE SAME BLANK PAGE, and only
