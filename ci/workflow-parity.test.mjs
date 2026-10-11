@@ -190,6 +190,10 @@ test("release: the script names, the asset guard and the release asset list are 
         assert.equal(b.get(name).run, script, `Gitea "${name}"`);
     }
 
+    for (const name of ["List the declared books", "Read changelog section for this version", "The assets exist"]) {
+        assert.equal(a.get(name).run, b.get(name).run, `"${name}" differs between the forges`);
+    }
+
     const githubRelease = a.get("Create GitHub Release").with;
     const giteaRelease = b.get("Create GitHub Release").with;
     const files = (value) => value.split("\n").map((line) => line.trim()).filter(Boolean);
@@ -198,7 +202,7 @@ test("release: the script names, the asset guard and the release asset list are 
         "build/dist/${{ inputs.package-kind }}.zip",
         "build/dist/${{ inputs.package-kind }}.json",
         "build/dist/*.jsonl",
-        "build/dist/*.pdf",
+        "${{ steps.books.outputs.files }}",
     ]);
     assert.equal(giteaRelease["body-path"], githubRelease.body_path);
     assert.equal(giteaRelease.name, githubRelease.name);

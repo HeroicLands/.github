@@ -303,12 +303,16 @@ jobs:
 
                   if [ "${BASH_REMATCH[3]}" = "0" ]; then
                       echo "$VERSION is a minor or major release — publishing as a release, marked latest."
-                      echo "prerelease=false" >> "$GITHUB_OUTPUT"
-                      echo "make_latest=true" >> "$GITHUB_OUTPUT"
+                      {
+                          echo "prerelease=false"
+                          echo "make_latest=true"
+                      } >> "$GITHUB_OUTPUT"
                   else
                       echo "$VERSION is a patch release — publishing as a prerelease, not marked latest."
-                      echo "prerelease=true" >> "$GITHUB_OUTPUT"
-                      echo "make_latest=false" >> "$GITHUB_OUTPUT"
+                      {
+                          echo "prerelease=true"
+                          echo "make_latest=false"
+                      } >> "$GITHUB_OUTPUT"
                   fi
 
                   # Branch on the EXIT CODE, not on truthiness
@@ -340,8 +344,10 @@ jobs:
                           ;;
                       2)
                           echo "Version $VERSION is untagged — releasing $TAG."
-                          echo "release=true" >> "$GITHUB_OUTPUT"
-                          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+                          {
+                              echo "release=true"
+                              echo "tag=$TAG"
+                          } >> "$GITHUB_OUTPUT"
                           ;;
                       *)
                           echo "::error::git ls-remote could not determine whether $TAG exists (exit $status). Refusing to release."
@@ -360,6 +366,32 @@ jobs:
               if: steps.decide.outputs.release == 'true'
               run: npm run build:pack-release
 
+            # The books the package declares, as paths the build writes them
+            # to, from the one place that owns the naming rule. The list is the
+            # single source for the notes, the asset check and the attached
+            # files. A package with no books lists none. A toolchain without
+            # the listing falls back to every PDF in build/dist/, which the
+            # asset check then requires to be non-empty.
+            - name: List the declared books
+              id: books
+              if: steps.decide.outputs.release == 'true'
+              env:
+                  VERSION: ${{ steps.decide.outputs.version }}
+              run: |
+                  mkdir -p build
+                  if ! npx --no-install package-build pdf --list-assets --book-version "$VERSION" > build/books.json 2>/dev/null; then
+                      echo "::notice::package-build cannot list the declared books; attaching every PDF in build/dist/ instead, titled by file name."
+                      for book in build/dist/*.pdf; do
+                          [ -e "$book" ] || continue
+                          jq -n --arg file "$book" '{id: ($file | split("/") | last), title: ($file | split("/") | last), file: $file}'
+                      done | jq -s '.' > build/books.json
+                  fi
+                  {
+                      echo 'files<<BOOKS_EOF'
+                      jq -r '.[].file' build/books.json
+                      echo 'BOOKS_EOF'
+                  } >> "$GITHUB_OUTPUT"
+
             # Written to a file rather than a step output: a version's section
             # can be very large when many changesets have accumulated between
             # releases, and passing that much text through an action input
@@ -374,6 +406,16 @@ jobs:
                   # excluding the version header itself — the release title
                   # already shows it.
                   awk '/^## /{c++; if (c>=2) exit; next} c==1{print}' CHANGELOG.md > build/release-notes.md
+
+                  # A package that declares books ends its notes with one line
+                  # per book: the title and the file attached for it, in the
+                  # order the configuration declares them.
+                  if [ "$(jq 'length' build/books.json)" -gt 0 ]; then
+                      {
+                          printf '\n**Books**\n\n'
+                          jq -r '.[] | "- \(.title): `\(.file | split("/") | last)`"' build/books.json
+                      } >> build/release-notes.md
+                  fi
 
             # A Release is published the moment it is created and is what every
             # installed copy of the package updates from, so an empty one cannot
@@ -414,26 +456,23 @@ jobs:
                       fi
                   fi
 
-                  # The content book, when the package builds one. Most do
-                  # not: `package-build` fences the PDF behind
-                  # `publish.site: content`, so a package publishing only a
-                  # homepage emits none and its absence is the normal case
-                  # rather than a failure. What is checked is the one thing
-                  # that can go wrong here — a book that was produced but
-                  # came out empty, which would otherwise be attached
-                  # unverified and downloaded as a 0-byte file.
+                  # Every declared book. The list is what the release attaches,
+                  # so a book that was declared but not produced, or came out
+                  # empty, fails here rather than shipping a Release without
+                  # it or with a 0-byte download. A package declaring no books
+                  # lists none.
                   book_assets=()
-                  for book in build/dist/*.pdf; do
-                      [ -e "$book" ] || continue
+                  while IFS= read -r book; do
+                      [ -n "$book" ] || continue
                       if [ ! -s "$book" ]; then
-                          echo "::error::$book is empty after npm run build:pack-release."
+                          echo "::error::$book is a declared book but is missing or empty after npm run build:pack-release."
                           missing=1
                       fi
                       book_assets+=("$book")
-                  done
+                  done < <(jq -r '.[].file' build/books.json)
 
                   [ "$missing" -eq 0 ] || exit 1
-                  ls -l "build/dist/$KIND.zip" "build/dist/$KIND.json" ${index_asset:+"$index_asset"} "${book_assets[@]}"
+                  ls -l "build/dist/$KIND.zip" "build/dist/$KIND.json" ${index_asset:+"$index_asset"} ${book_assets[@]+"${book_assets[@]}"}
 
             # Creates the v<version> tag and the GitHub Release, attaching the
             # two assets Foundry installs and updates from, plus whatever else
@@ -473,7 +512,7 @@ jobs:
                       build/dist/${{ inputs.package-kind }}.zip
                       build/dist/${{ inputs.package-kind }}.json
                       build/dist/*.jsonl
-                      build/dist/*.pdf
+                      ${{ steps.books.outputs.files }}
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
