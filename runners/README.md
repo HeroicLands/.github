@@ -44,6 +44,7 @@ the host, so the workflows' GNU `sed`, `date` and paths behave as on excelsior.
 | Path | Contents |
 | ---- | -------- |
 | `image/Dockerfile` | The job image, built for `linux/amd64` and `linux/arm64` |
+| `image/Dockerfile.e2e` | The e2e image, built on the job image |
 | `intrepid/` | `compose.yml`, runner configs and `install.sh` for Intrepid |
 | `atlas/` | `compose.yml`, runner config and `install.sh` for atlas |
 
@@ -57,6 +58,101 @@ per architecture, verified during the build. GraphViz, poppler-utils, jq and
 unzip come from the Ubuntu 24.04 archive. Each host builds the image itself, so
 the local architecture is used; the tag in the runner configs (`ci-job:1`) is
 the single selector.
+
+### The e2e image
+
+`heroiclands/ci-e2e:<tag>` is the job image of the same tag plus what Cypress
+needs headless: Xvfb, GTK, NSS, ALSA and the other libraries Electron and
+Chromium link against, and fonts. A suite run with `--browser chromium` finds a
+Chromium on `PATH`: Ubuntu 24.04 ships Chromium only as a snap, which does not
+run in a container, so the image carries the Chrome for Testing build
+Playwright publishes for linux-arm64 and linux-x64, pinned by version and
+SHA-256. `chromium --version` answers `Chromium <version>`, which is how Cypress
+recognises it. Only the `e2e` label uses this image, so `light`, `lint` and
+`book` jobs do not carry its weight.
+
+## End-to-end runs on Intrepid
+
+`intrepid-heavy` runs `.gitea/workflows/e2e-full.yml`, which each package calls
+with its package id. A job there drives a Foundry container through OrbStack's
+docker:
+
+- **The docker socket.** The runner mounts it into every job (through its
+  per-job proxy, which removes whatever the job created when the job ends).
+- **Host networking.** package-build and Cypress reach Foundry at
+  `localhost:<port>`, the port the Foundry container publishes on the VM, so
+  jobs share the VM's network (`container.network: host`).
+- **Paths that mean the same on both sides.** package-build mounts the Foundry
+  data root and download cache into Foundry with `docker run -v <path>`, which
+  the daemon resolves in OrbStack's VM. The VM sees macOS paths under
+  `/Users` at the same path, so the e2e directory is mounted into the job at
+  its own macOS path too, and a path the job names is the path the daemon
+  mounts.
+- **Ownership.** OrbStack's file sharing presents every file as owned by the
+  user that reads it and accepts `chown` without changing anything, so the
+  `uid:gid` package-build hands the Foundry tree to does not matter here.
+
+| Path on Intrepid | Mounted as | Holds |
+| ---------------- | ---------- | ----- |
+| `~/.local/share/heroiclands/e2e/` | `HL_E2E_ROOT` | `data/` (the Foundry data root every package shares, with its licence), `cache/` (Foundry releases), `cypress/` (Cypress binaries), `npm/` |
+| `~/.config/heroiclands-e2e/` (mode 700) | `HL_E2E_SECRETS`, read-only | `<package>.env.local` per package (mode 600) |
+
+The workflow copies `<package>.env.local` into the checkout as `.env.local` and
+sets `FOUNDRYVTT_TEST_DATA`, `FOUNDRYVTT_CACHE` and `CYPRESS_CACHE_FOLDER` from
+`HL_E2E_ROOT` in the job's environment, which package-build and Cypress prefer
+to the file. So a package's `.env.local` is copied as it is, whatever host paths
+it names.
+
+The mounts belong to the runner instance, so a `book` job sees them as well; the
+`e2e` and `book` labels are for this organization's own workflows only.
+
+### The Foundry licence on Intrepid
+
+Foundry binds a licence's signature to the installation, and the felddy image
+applies a key without signing it. A fresh data root therefore starts with an
+unsigned licence (`license.json` holding only the key) and no world ever
+activates: the container logs `Software license requires signature.` and
+package-build gives up after its wait. Sign it once, by hand:
+
+1. On Intrepid, in a checkout of any package that runs e2e, after `npm ci` and
+   with its `.env.local` in place, and with OrbStack's `docker` and Homebrew's
+   `node` on `PATH`:
+
+   ```bash
+   e2e="$HOME/.local/share/heroiclands/e2e"
+   FOUNDRYVTT_TEST_DATA="$e2e/data" FOUNDRYVTT_CACHE="$e2e/cache" \
+     npx package-build container test start
+   ```
+
+   No world is named, so Foundry starts at its licence page.
+2. From excelsior, `ssh -L 30003:localhost:30003 intrepid` and open
+   `http://localhost:30003`. Accept the licence agreement.
+3. `package-build container test rm`.
+
+The signature lives in `data/Config/license.json` and survives every later run,
+because the container keeps the hostname `heroiclands-foundry-test`.
+
+### Calling it
+
+Gitea evaluates `on.schedule` cron in UTC, whatever the server's time zone. A
+caller names its own triggers:
+
+```yaml
+on:
+  schedule:
+    - cron: "30 8 * * *" # 01:30 Pacific daylight time
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+jobs:
+  e2e:
+    if: github.event_name != 'pull_request' || github.event.label.name == 'e2e'
+    uses: HeroicLands/.github/.gitea/workflows/e2e-full.yml@main
+    with:
+      package: sohl
+      build-script: build:tested-stage
+```
 
 ## Installing a host
 
@@ -78,10 +174,21 @@ command line or printed.
    ```
 
 3. From a checkout of this repository: `runners/intrepid/install.sh`.
+4. For each package with an e2e suite, copy its `.env.local` from a machine
+   that runs that suite, without printing it:
+
+   ```bash
+   scp <repo>/.env.local intrepid:.config/heroiclands-e2e/<package>.env.local
+   ssh intrepid 'chmod 600 ~/.config/heroiclands-e2e/*.env.local'
+   ```
+
+   Then sign the Foundry licence once (see
+   [The Foundry licence on Intrepid](#the-foundry-licence-on-intrepid)).
 
 The script copies `compose.yml` and both configs into
 `~/.local/share/heroiclands/gitea-runner/`, builds `heroiclands/ci-job:<tag>`
-with OrbStack's docker, registers `intrepid-check` and `intrepid-heavy` once
+and `heroiclands/ci-e2e:<tag>` with OrbStack's docker, creates the e2e
+directories, registers `intrepid-check` and `intrepid-heavy` once
 with the official `gitea/runner` image (the token is read from the mounted
 file), and runs `docker compose up -d`. Each instance keeps its state and cache
 in `data/<instance>/` beside the stack.
@@ -127,8 +234,9 @@ container is capped at 512 MB and half a core; each job container is capped at
   `RUNNER_IMAGE` in both install scripts, then re-run the scripts; each runner
   restarts on the new image after a drain.
 - **Bump the job image.** Edit the versions and checksums at the top of
-  `image/Dockerfile`, increment the tag in the `labels` of all three configs and
-  in `IMAGE_TAG` of both install scripts, and re-run the scripts. Each script
+  `image/Dockerfile` (or `image/Dockerfile.e2e`), increment the tag in the
+  `labels` of all three configs and in `IMAGE_TAG` of both install scripts, and
+  re-run the scripts. Each script
   refuses to run when its config and tag disagree. A new tag builds a new image;
   the previous image stays until removed with `docker image rm`.
 - **Change a label or capacity.** Edit the config in this directory and re-run

@@ -15,6 +15,7 @@ set -euo pipefail
 RUNNER_IMAGE="gitea/runner:5.0.0"
 IMAGE_TAG="1"
 JOB_IMAGE="heroiclands/ci-job:${IMAGE_TAG}"
+E2E_IMAGE="heroiclands/ci-e2e:${IMAGE_TAG}"
 INSTANCE_URL="https://git.pupluppy.org/"
 INSTANCES="check heavy"
 
@@ -24,6 +25,9 @@ conf="${HOME}/.config/gitea-runner"
 stack="${HOME}/.local/share/heroiclands/gitea-runner"
 token_file="${conf}/registration-token"
 sock="${HOME}/.orbstack/run/docker.sock"
+# Mounted into intrepid-heavy's jobs at the same path; see heavy.yaml.
+e2e_root="${HOME}/.local/share/heroiclands/e2e"
+e2e_secrets="${HOME}/.config/heroiclands-e2e"
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -59,11 +63,31 @@ for i in ${INSTANCES}; do
   mkdir -p "${stack}/data/${i}"
 done
 
-# Job image, built for this machine's architecture (arm64).
+grep -q "\"e2e:docker://${E2E_IMAGE}\"" "${here}/heavy.yaml" \
+  || die "heavy.yaml does not route e2e to ${E2E_IMAGE}"
+
+# Job images, built for this machine's architecture (arm64). The e2e image is
+# built on the job image of the same tag.
 if ! docker image inspect "${JOB_IMAGE}" >/dev/null 2>&1; then
   say "Building ${JOB_IMAGE}"
   docker buildx build --load -t "${JOB_IMAGE}" "${repo_runners}/image"
 fi
+if ! docker image inspect "${E2E_IMAGE}" >/dev/null 2>&1; then
+  say "Building ${E2E_IMAGE}"
+  docker buildx build --load --build-arg "BASE=${JOB_IMAGE}" -t "${E2E_IMAGE}" \
+    -f "${repo_runners}/image/Dockerfile.e2e" "${repo_runners}/image"
+fi
+
+# e2e jobs keep the Foundry data root, the Foundry download cache, Cypress's
+# binaries and npm's cache here between runs. Each consumer's .env.local sits in
+# the secrets directory as <package>.env.local, mode 600.
+mkdir -p "${e2e_root}/data" "${e2e_root}/cache" "${e2e_root}/cypress" "${e2e_root}/npm"
+(umask 077 && mkdir -p "${e2e_secrets}")
+[ "$(stat -f '%Lp' "${e2e_secrets}")" = "700" ] || die "${e2e_secrets} must be mode 700"
+for f in "${e2e_secrets}"/*.env.local; do
+  [ -e "${f}" ] || continue
+  [ "$(stat -f '%Lp' "${f}")" = "600" ] || die "${f} must be mode 600"
+done
 
 for i in ${INSTANCES}; do
   if [ -s "${stack}/data/${i}/.runner" ]; then
@@ -85,6 +109,7 @@ for i in ${INSTANCES}; do
   chmod 600 "${stack}/data/${i}/.runner"
 done
 
+# `up` recreates an instance whose compose definition changed.
 (cd "${stack}" && docker compose up -d)
 # A config is read at start, so a changed one needs a restart (after a drain).
 for i in ${changed}; do

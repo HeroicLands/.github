@@ -310,11 +310,12 @@ test("a Gitea runs-on without a declared mapping is refused", () => {
 });
 
 /**
- * Gitea workflows with no GitHub copy: the parity check itself, and the npm
+ * Gitea workflows with no GitHub copy: the parity check itself; the npm
  * release, whose GitHub half is each package's own `release.yml` because npm's
- * trusted publisher is bound to that file.
+ * trusted publisher is bound to that file; and the full e2e run, which needs
+ * Intrepid's `e2e` runner and the Foundry stage it hosts.
  */
-const GITEA_ONLY = ["workflow-parity.yml", "release-npm-package.yml"];
+const GITEA_ONLY = ["workflow-parity.yml", "release-npm-package.yml", "e2e-full.yml"];
 
 test("every Gitea workflow file has a GitHub counterpart, apart from the Gitea-only ones", () => {
     const names = (forge) => readdirSync(new URL(`${forge}/workflows/`, root)).sort();
@@ -437,6 +438,70 @@ describe("release-npm-package.yml", () => {
             if (/server_url|api_url/.test(body)) {
                 assert.equal(expression(body), `github.server_url != ${HOST} && vars.HL_RELEASE_ENABLED == 'true'`);
             }
+        }
+    });
+});
+
+describe("e2e-full.yml", () => {
+    const file = "e2e-full.yml";
+    const workflow = load(GITEA, file);
+    const code = text(GITEA, file)
+        .split("\n")
+        .filter((line) => !/^\s*#/.test(line))
+        .join("\n");
+    const steps = stepsByName(workflow, "e2e");
+
+    test("it is only called, and takes the package and its build script", () => {
+        assert.deepEqual(Object.keys(workflow.on), ["workflow_call"]);
+        const inputs = workflow.on.workflow_call.inputs;
+        assert.deepEqual(Object.keys(inputs).sort(), ["build-script", "package"]);
+        assert.equal(inputs.package.required, true);
+        assert.equal(inputs["build-script"].default, "build:noci");
+        assert.equal(workflow.on.workflow_call.secrets, undefined);
+    });
+
+    test("its one job runs on the e2e label and holds no secret", () => {
+        assert.deepEqual(Object.keys(workflow.jobs), ["e2e"]);
+        assert.equal(workflow.jobs.e2e["runs-on"], "e2e");
+        assert.doesNotMatch(code, /secrets\./);
+        assert.deepEqual(workflow.permissions, { contents: "read" });
+    });
+
+    test("it builds, then runs the package's own e2e:full", () => {
+        assert.deepEqual([...steps.keys()], [
+            "Checkout code",
+            "Place the package's settings",
+            "Install dependencies",
+            "Build the stage",
+            "Run the full suite",
+            "Upload the Cypress output",
+            "Remove the package's settings",
+        ]);
+        assert.equal(steps.get("Build the stage").run, 'npm run "$BUILD_SCRIPT"');
+        assert.equal(steps.get("Build the stage").env.BUILD_SCRIPT, "${{ inputs.build-script }}");
+        assert.match(steps.get("Run the full suite").run, /^npm run e2e:full 2>&1 \| tee e2e-full\.log \|\| status=\$\?$/m);
+        assert.match(steps.get("Run the full suite").run, /^exit "\$status"$/m);
+        assert.equal(expression(steps.get("Upload the Cypress output").if), "failure()");
+        assert.equal(expression(steps.get("Remove the package's settings").if), "always()");
+    });
+
+    test("an input reaches a script only through the environment", () => {
+        for (const step of steps.values()) {
+            assert.doesNotMatch(step.run ?? "", /\$\{\{\s*inputs\./, `"${step.name}" interpolates an input into its script`);
+        }
+    });
+
+    test("the settings come from the runner's secrets directory and the data root from its e2e root", () => {
+        const place = steps.get("Place the package's settings");
+        assert.equal(place.env.PACKAGE, "${{ inputs.package }}");
+        assert.match(place.run, /settings="\$HL_E2E_SECRETS\/\$PACKAGE\.env\.local"/);
+        assert.match(place.run, /install -m 600 "\$settings" \.env\.local/);
+        for (const line of [
+            'echo "FOUNDRYVTT_TEST_DATA=$HL_E2E_ROOT/data"',
+            'echo "FOUNDRYVTT_CACHE=$HL_E2E_ROOT/cache"',
+            'echo "CYPRESS_CACHE_FOLDER=$HL_E2E_ROOT/cypress"',
+        ]) {
+            assert.ok(place.run.includes(line), `missing: ${line}`);
         }
     });
 });

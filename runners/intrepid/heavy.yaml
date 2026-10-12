@@ -1,5 +1,11 @@
 # Intrepid runner "intrepid-heavy": book and e2e jobs share one slot, so a book
 # never runs beside an e2e run.
+#
+# HL_E2E_ROOT and HL_E2E_SECRETS come from compose.yml. Both are macOS paths that
+# OrbStack's VM sees at the same path, and both are mounted into every job at
+# that path too: package-build hands the Foundry data root and download cache to
+# `docker run -v`, which the daemon resolves on the VM, so the job and the
+# daemon must name them alike.
 log:
   level: info
 runner:
@@ -7,13 +13,27 @@ runner:
   capacity: 1
   timeout: 3h
   shutdown_timeout: 10m
+  envs:
+    HL_E2E_ROOT: ${HL_E2E_ROOT}
+    HL_E2E_SECRETS: ${HL_E2E_SECRETS}
   labels:
     - "book:docker://heroiclands/ci-job:1"
-    - "e2e:docker://heroiclands/ci-job:1"
+    - "e2e:docker://heroiclands/ci-e2e:1"
 cache:
   enabled: true
   dir: /data/cache
 container:
+  # package-build and Cypress reach the Foundry container at localhost:<port>,
+  # which is the port it publishes on the VM.
+  network: host
+  # Chromium and Electron need more shared memory than docker's 64 MB default.
+  options: >-
+    --shm-size=2g
+    --volume ${HL_E2E_ROOT}:${HL_E2E_ROOT}
+    --volume ${HL_E2E_SECRETS}:${HL_E2E_SECRETS}:ro
+  valid_volumes:
+    - ${HL_E2E_ROOT}
+    - ${HL_E2E_SECRETS}:ro
   docker_host: unix:///var/run/docker.sock
   privileged: false
   force_pull: false

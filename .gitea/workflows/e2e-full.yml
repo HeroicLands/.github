@@ -1,0 +1,121 @@
+# Run a package's full Foundry end-to-end suite (`npm run e2e:full`) on the
+# `e2e` runner, Intrepid's `intrepid-heavy`.
+#
+# A caller owns its triggers: a nightly `schedule`, `workflow_dispatch`, and a
+# pull request labelled `e2e`. Gitea evaluates `on.schedule` cron in UTC.
+#
+# WHAT THE RUNNER PROVIDES (runners/intrepid/heavy.yaml): the `ci-e2e` image
+# (Cypress's system libraries, Xvfb and a Chromium), the docker socket,
+# host networking so `localhost:<port>` reaches the Foundry container, and two
+# directories mounted at the paths the docker daemon knows them by:
+#
+#   HL_E2E_ROOT     the Foundry data root (`data/`), the Foundry download cache
+#                   (`cache/`), Cypress's binaries and npm's cache, kept
+#                   between runs. Every package shares the data root, so they
+#                   share one signed licence; the slot runs one job at a time.
+#   HL_E2E_SECRETS  `<package>.env.local` for each package, read-only.
+#
+# This workflow copies `<package>.env.local` into the checkout as `.env.local`
+# and sets the data root and caches in the environment, where they take
+# precedence over the file's own values for this host.
+#
+# WHAT A PACKAGE OWNS: its build (`build-script`, which must leave the stage
+# `package-build e2e run` deploys) and its suite, through its own `e2e:full`
+# script.
+
+name: Full e2e
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: >-
+          The package id, such as `sohl` or `hm3`. It selects
+          `<package>.env.local` on the runner.
+        required: true
+        type: string
+      build-script:
+        description: >-
+          The npm script that builds the stage the suite deploys. A build
+          that lints or runs unit tests as well works, at the cost of time.
+        required: false
+        default: build:noci
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Full e2e (${{ inputs.package }})
+    runs-on: e2e
+    timeout-minutes: 170
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Place the package's settings
+        env:
+          PACKAGE: ${{ inputs.package }}
+        run: |
+          case "$PACKAGE" in
+            ''|*[!a-z0-9-]*) echo "::error::package '$PACKAGE' is not a package id" >&2; exit 1 ;;
+          esac
+          if [ -z "${HL_E2E_ROOT:-}" ] || [ -z "${HL_E2E_SECRETS:-}" ]; then
+            echo "::error::this runner does not provide HL_E2E_ROOT and HL_E2E_SECRETS; run on the e2e label" >&2
+            exit 1
+          fi
+          settings="$HL_E2E_SECRETS/$PACKAGE.env.local"
+          if [ ! -f "$settings" ]; then
+            echo "::error::the runner has no $PACKAGE.env.local in $HL_E2E_SECRETS" >&2
+            exit 1
+          fi
+          install -m 600 "$settings" .env.local
+          {
+            echo "FOUNDRYVTT_TEST_DATA=$HL_E2E_ROOT/data"
+            echo "FOUNDRYVTT_CACHE=$HL_E2E_ROOT/cache"
+            echo "CYPRESS_CACHE_FOLDER=$HL_E2E_ROOT/cypress"
+            echo "npm_config_cache=$HL_E2E_ROOT/npm"
+          } >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build the stage
+        env:
+          BUILD_SCRIPT: ${{ inputs.build-script }}
+        run: npm run "$BUILD_SCRIPT"
+
+      - name: Run the full suite
+        env:
+          PACKAGE: ${{ inputs.package }}
+        run: |
+          set -o pipefail
+          status=0
+          npm run e2e:full 2>&1 | tee e2e-full.log || status=$?
+          {
+            echo "### Full e2e: $PACKAGE"
+            echo
+            echo '```'
+            # Cypress's closing table, one row per spec.
+            sed -n '/(Run Finished)/,$p' e2e-full.log | sed 's/\x1b\[[0-9;]*m//g'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Upload the Cypress output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ inputs.package }}
+          path: |
+            e2e-full.log
+            cypress/screenshots/
+            cypress/videos/
+            cypress/results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Remove the package's settings
+        if: always()
+        run: rm -f .env.local

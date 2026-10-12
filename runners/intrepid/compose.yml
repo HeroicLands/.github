@@ -31,6 +31,9 @@ services:
       CONFIG_FILE: /config.yaml
       GITEA_INSTANCE_URL: https://git.pupluppy.org/
       GITEA_RUNNER_NAME: intrepid-heavy
+      # Read by heavy.yaml: the e2e data, caches and credentials, as macOS paths.
+      HL_E2E_ROOT: ${HOME}/.local/share/heroiclands/e2e
+      HL_E2E_SECRETS: ${HOME}/.config/heroiclands-e2e
     volumes:
       - ./heavy.yaml:/config.yaml:ro
       - ./data/heavy:/data
