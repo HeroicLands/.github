@@ -1,0 +1,19 @@
+# Intrepid runner "intrepid-heavy": book and e2e jobs share one slot, so a book
+# never runs beside an e2e run.
+log:
+  level: info
+runner:
+  file: /data/.runner
+  capacity: 1
+  timeout: 3h
+  shutdown_timeout: 10m
+  labels:
+    - "book:docker://heroiclands/ci-job:1"
+    - "e2e:docker://heroiclands/ci-job:1"
+cache:
+  enabled: true
+  dir: /data/cache
+container:
+  docker_host: unix:///var/run/docker.sock
+  privileged: false
+  force_pull: false
