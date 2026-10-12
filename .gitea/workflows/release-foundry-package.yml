@@ -23,6 +23,10 @@ name: Version and Release
 #     failed upload finishes the job.
 #   * The GitHub Release is made by `actions/github-release` with
 #     `GH_RELEASE_TOKEN`, once the push mirror has delivered the tag to GitHub.
+#   * The work is three jobs, `decide`, `book` and `release`, so the books can
+#     build on the runner named by `book-runner`. The `release` job repeats the
+#     checkout and install, and its "Take the release decision" step republishes
+#     the `decide` job's result under the step id the later steps read.
 #
 #   1. A pull request declares its bump as a `.changeset/*.md` file.
 #   2. Merging it to `main` runs this workflow, which opens or updates the
@@ -102,6 +106,27 @@ on:
                 required: false
                 default: ""
                 type: string
+            book-runner:
+                description: >-
+                    The runner label the book job runs on, such as `book`, the
+                    runner whose image carries Typst. Empty, the default, builds
+                    the books in the release job through the package's
+                    `build:pack-release` script. GitHub's copy of this workflow
+                    ignores it.
+                required: false
+                default: ""
+                type: string
+            book-script:
+                description: >-
+                    The npm script that builds the books, called with
+                    `--out build/dist --book-version <version>` appended. Empty
+                    runs `npm run build:deps --if-present` and then
+                    `package-build pdf`. A package whose book needs more first,
+                    such as generated API documentation, names a script that
+                    does it and ends in `package-build pdf`.
+                required: false
+                default: ""
+                type: string
             node-version:
                 description: >-
                     Deliberately an input although all six callers pass the
@@ -117,16 +142,16 @@ on:
                     `true` when this run cut a Release, `false` otherwise. Every
                     ordinary push to main reports `false` — that is the normal
                     outcome, not a failure. Gate a follow-on job on this.
-                value: ${{ jobs.release.outputs.released }}
+                value: ${{ jobs.decide.outputs.released }}
             version:
                 description: >-
                     The version in package.json this run considered. Empty when
                     the run only opened or updated the Version Packages pull
                     request, since the decision step is skipped in that case.
-                value: ${{ jobs.release.outputs.version }}
+                value: ${{ jobs.decide.outputs.version }}
             tag:
                 description: The `v<version>` tag, set only when `released` is true.
-                value: ${{ jobs.release.outputs.tag }}
+                value: ${{ jobs.decide.outputs.tag }}
         secrets:
             RELEASE_BOT_TOKEN:
                 description: >-
@@ -147,7 +172,16 @@ on:
 
 
 jobs:
-    release:
+    # Three jobs, so the books can build on their own runner:
+    #
+    #   decide   the version pull request, the release decision, and whether the
+    #            package declares books. Cheap, and the only job that runs on
+    #            an ordinary push.
+    #   book     builds the books on `inputs.book-runner` and hands them over as
+    #            an artifact. Runs only for a release of a package with books.
+    #   release  builds the package, takes the books from the artifact and cuts
+    #            the Release. It runs when `book` succeeded or was skipped.
+    decide:
         # Runs on Gitea only, and only for a repository that has switched
         # releasing on. The GitHub-side workflow under .github/workflows is the
         # release path on GitHub.
@@ -158,7 +192,8 @@ jobs:
         # a called workflow is evaluated in the caller's context and does not
         # behave the way it reads. Keyed by the calling repository, so six
         # packages release independently and no package ever races itself onto
-        # the version pull request or the tag.
+        # the version pull request or the tag. The `release` job holds the same
+        # group.
         concurrency:
             group: foundry-package-release-${{ github.repository }}
             cancel-in-progress: false
@@ -173,6 +208,11 @@ jobs:
             released: ${{ steps.decide.outputs.release == 'true' }}
             version: ${{ steps.decide.outputs.version }}
             tag: ${{ steps.decide.outputs.tag }}
+            release: ${{ steps.decide.outputs.release }}
+            prerelease: ${{ steps.decide.outputs.prerelease }}
+            make_latest: ${{ steps.decide.outputs.make_latest }}
+            resume: ${{ steps.decide.outputs.resume }}
+            books: ${{ steps.declared.outputs.present == 'true' }}
 
         steps:
             # Rejected here rather than mapped onto the nearest value: a typo
@@ -377,6 +417,151 @@ jobs:
                           ;;
                   esac
 
+            # Whether the book job has work: a book runner is named and the
+            # package declares a book. A toolchain that cannot list them
+            # reports none, and the release job then builds whatever the
+            # package script builds.
+            - name: Find the declared books
+              id: declared
+              if: steps.decide.outputs.release == 'true'
+              env:
+                  VERSION: ${{ steps.decide.outputs.version }}
+                  BOOK_RUNNER: ${{ inputs.book-runner }}
+              run: |
+                  present=false
+                  if [ -z "$BOOK_RUNNER" ]; then
+                      echo "No book runner is named; the release job builds the books."
+                  elif books=$(npx --no-install package-build pdf --list-assets --out build/dist --book-version "$VERSION" 2>/dev/null) \
+                      && [ "$(printf '%s' "$books" | jq 'length')" -gt 0 ]; then
+                      present=true
+                  fi
+                  echo "present=$present" >> "$GITHUB_OUTPUT"
+
+
+    book:
+        # Runs after `decide` whatever it decided, so nothing downstream depends
+        # on a skipped job: Gitea skips a job whose `needs` was skipped whatever
+        # `always()` says. Every step that does work carries the opt-in
+        # condition, so a caller that names no book runner, or a run with
+        # nothing to release, passes through here in seconds.
+        needs: decide
+        runs-on: ${{ inputs.book-runner || 'ubuntu-latest' }}
+
+        steps:
+            - name: Note whether there are books to build
+              env:
+                  BUILDS_HERE: ${{ needs.decide.outputs.release == 'true' && needs.decide.outputs.books == 'true' && inputs.book-runner != '' }}
+              run: |
+                  echo "Books built here: $BUILDS_HERE"
+
+            - name: Checkout the release commit
+              if: ${{ needs.decide.outputs.release == 'true' && needs.decide.outputs.books == 'true' && inputs.book-runner != '' }}
+              uses: actions/checkout@v7
+              with:
+                  token: ${{ secrets.RELEASE_BOT_TOKEN }}
+
+            - name: Check the runner has the tools the book uses
+              if: ${{ needs.decide.outputs.release == 'true' && needs.decide.outputs.books == 'true' && inputs.book-runner != '' }}
+              env:
+                  NODE_VERSION: ${{ inputs.node-version }}
+              run: |
+                  missing=0
+                  for tool in node npm typst jq; do
+                      command -v "$tool" >/dev/null || { echo "::error::$tool is not on this runner's PATH."; missing=1; }
+                  done
+                  [ "$missing" -eq 0 ] || exit 1
+                  node_major=$(node -p 'process.versions.node.split(".")[0]')
+                  if [ "$node_major" != "$NODE_VERSION" ]; then
+                      echo "::error::This runner has Node $node_major; the caller asked for $NODE_VERSION."
+                      exit 1
+                  fi
+                  typst --version
+
+            - name: Install dependencies
+              if: ${{ needs.decide.outputs.release == 'true' && needs.decide.outputs.books == 'true' && inputs.book-runner != '' }}
+              run: npm ci
+
+            # The books are written beside the package archive, where the
+            # release job looks for them. The script's name is data and
+            # reaches the shell through the environment.
+            - name: Build the books
+              if: ${{ needs.decide.outputs.release == 'true' && needs.decide.outputs.books == 'true' && inputs.book-runner != '' }}
+              env:
+                  BOOK_SCRIPT: ${{ inputs.book-script }}
+                  VERSION: ${{ needs.decide.outputs.version }}
+              run: |
+                  if [ -n "$BOOK_SCRIPT" ]; then
+                      npm run "$BOOK_SCRIPT" -- --out build/dist --book-version "$VERSION"
+                  else
+                      npm run build:deps --if-present
+                      npx --no-install package-build pdf --out build/dist --book-version "$VERSION"
+                  fi
+                  ls -l build/dist/*.pdf
+
+            - name: Hand over the books
+              if: ${{ needs.decide.outputs.release == 'true' && needs.decide.outputs.books == 'true' && inputs.book-runner != '' }}
+              uses: actions/upload-artifact@v7
+              with:
+                  name: release-books
+                  path: build/dist/*.pdf
+                  if-no-files-found: error
+                  retention-days: 3
+
+    release:
+        # A plain condition: a failed `book` or `decide` skips this job, and a
+        # `decide` that decided against releasing does too.
+        needs: [decide, book]
+        if: ${{ needs.decide.outputs.release == 'true' }}
+        runs-on: ubuntu-latest
+
+        concurrency:
+            group: foundry-package-release-${{ github.repository }}
+            cancel-in-progress: false
+
+        outputs:
+            released: ${{ steps.decide.outputs.release == 'true' }}
+            version: ${{ steps.decide.outputs.version }}
+            tag: ${{ steps.decide.outputs.tag }}
+
+        steps:
+            # The bot's token is persisted by the checkout, so the tag is pushed
+            # as the bot and starts workflows.
+            - name: Checkout the release commit
+              uses: actions/checkout@v7
+              with:
+                  token: ${{ secrets.RELEASE_BOT_TOKEN }}
+                  fetch-depth: 0
+
+            - name: Setup Node for the release
+              uses: actions/setup-node@v7
+              with:
+                  node-version: ${{ inputs.node-version }}
+                  cache: npm
+
+            - name: Install the release dependencies
+              run: npm ci
+
+            # The decision was made by the `decide` job; the steps below read
+            # it as they would had they made it themselves.
+            - name: Take the release decision
+              id: decide
+              env:
+                  RELEASE: ${{ needs.decide.outputs.release }}
+                  VERSION: ${{ needs.decide.outputs.version }}
+                  TAG: ${{ needs.decide.outputs.tag }}
+                  PRERELEASE: ${{ needs.decide.outputs.prerelease }}
+                  MAKE_LATEST: ${{ needs.decide.outputs.make_latest }}
+                  RESUME: ${{ needs.decide.outputs.resume }}
+              run: |
+                  {
+                      echo "release=$RELEASE"
+                      echo "version=$VERSION"
+                      echo "tag=$TAG"
+                      echo "prerelease=$PRERELEASE"
+                      echo "make_latest=$MAKE_LATEST"
+                      echo "resume=$RESUME"
+                  } >> "$GITHUB_OUTPUT"
+
             - name: Build the package
               if: steps.decide.outputs.release == 'true'
               run: npm run ${{ inputs.build-script }}
@@ -384,9 +569,26 @@ jobs:
             # Fixed, not an input: all six callers spell it the same way, and an
             # input for an axis nothing varies on is a knob that only invites
             # divergence.
+            #
+            # Books built by the `book` job arrive as an artifact, so the
+            # package script is told to leave them out.
             - name: Package the release
               if: steps.decide.outputs.release == 'true'
-              run: npm run build:pack-release
+              env:
+                  BOOKS_PREBUILT: ${{ needs.decide.outputs.books == 'true' }}
+              run: |
+                  if [ "$BOOKS_PREBUILT" = "true" ]; then
+                      npm run build:pack-release -- --no-pdf
+                  else
+                      npm run build:pack-release
+                  fi
+
+            - name: Fetch the books
+              if: steps.decide.outputs.release == 'true' && needs.decide.outputs.books == 'true'
+              uses: actions/download-artifact@v8
+              with:
+                  name: release-books
+                  path: build/dist
 
             # The books the package declares, as paths the build writes them
             # to, from the one place that owns the naming rule. The list is the
@@ -401,7 +603,7 @@ jobs:
                   VERSION: ${{ steps.decide.outputs.version }}
               run: |
                   mkdir -p build
-                  if ! npx --no-install package-build pdf --list-assets --book-version "$VERSION" > build/books.json 2>/dev/null; then
+                  if ! npx --no-install package-build pdf --list-assets --out build/dist --book-version "$VERSION" > build/books.json 2>/dev/null; then
                       echo "::notice::package-build cannot list the declared books; attaching every PDF in build/dist/ instead, titled by file name."
                       for book in build/dist/*.pdf; do
                           [ -e "$book" ] || continue

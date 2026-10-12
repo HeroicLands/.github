@@ -643,8 +643,11 @@ variable runs neither job. The secrets are organisation-level on Gitea and are
 passed by name; `secrets: inherit` is never used.
 
 Every job runs on `ubuntu-latest`, a host-mode runner that already carries Node,
-Hugo, `yq`, `jq` and `curl`. Nothing is installed into a system path. The job
-token never starts other workflows, so every push and pull request that has to
+Hugo, `yq`, `jq` and `curl`, apart from the Foundry release's `book` job, which
+runs on the runner its caller names. Nothing is installed into a system path.
+The Foundry release's gate sits on its `decide` job; `book` and `release`
+depend on it. The job token never starts other workflows, so every push and
+pull request that has to
 run checks is made with `RELEASE_BOT_TOKEN`.
 
 ### Releasing from Gitea
@@ -685,15 +688,30 @@ the GitHub copy above. The release sequence:
    GitHub copy does. A tag that exists elsewhere means nothing to release. A tag
    that already names the checked-out commit resumes the release, so a re-run
    after a failed upload finishes it.
-3. **Build and package.** The same two npm scripts and the same asset guard.
-4. **Tag.** The job pushes `v<version>` to the forge with the bot's token. A
+3. **Books.** When the release is real, a book runner is named and the package declares books
+   (`package-build pdf --list-assets` lists at least one), a `book` job builds
+   them on the runner named by the `book-runner` input and hands the PDFs to the
+   release job as the `release-books` artifact. The input is empty by default,
+   which leaves the books to the package's `build:pack-release` in the release
+   job; a caller opts in with `book-runner: book`, the runner whose image
+   carries Typst. The job runs
+   `package-build pdf --out build/dist --book-version <version>` after
+   `npm run build:deps`; `book-script` names an npm script to run in its place
+   when the books need more first. It is called with the same `--out` and
+   `--book-version`, so it should end in `package-build pdf`. A package with no
+   books, or a caller that names no runner, passes through the job without
+   running a step. The GitHub copy accepts both inputs and ignores them.
+4. **Build and package.** The same two npm scripts and the same asset guard.
+   When the books were built by the `book` job, packaging runs with
+   `--no-pdf` and the PDFs are downloaded into `build/dist` before the guard.
+5. **Tag.** The job pushes `v<version>` to the forge with the bot's token. A
    resumed run skips this step.
-5. **GitHub Release.** `actions/github-release` waits for the push mirror to
+6. **GitHub Release.** `actions/github-release` waits for the push mirror to
    deliver the tag to GitHub at the same commit, creates the release as a draft,
    uploads and checks every asset, and publishes it with `prerelease` and
    `make-latest` set explicitly. `GH_RELEASE_TOKEN` is a GitHub token with
    Contents read and write; the job writes no git ref on GitHub.
-6. **Post-release.** The optional `post-release-script` runs with `GITEA_TOKEN`
+7. **Post-release.** The optional `post-release-script` runs with `GITEA_TOKEN`
    (the job token) and `RELEASE_TAG` in its environment.
 
 | Secret | |

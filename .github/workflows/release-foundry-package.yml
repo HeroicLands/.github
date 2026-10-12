@@ -95,6 +95,27 @@ on:
                 required: false
                 default: ""
                 type: string
+            book-runner:
+                description: >-
+                    The runner label the book job runs on, such as `book`, the
+                    runner whose image carries Typst. Empty, the default, builds
+                    the books in the release job through the package's
+                    `build:pack-release` script. GitHub's copy of this workflow
+                    ignores it.
+                required: false
+                default: ""
+                type: string
+            book-script:
+                description: >-
+                    The npm script that builds the books, called with
+                    `--out build/dist --book-version <version>` appended. Empty
+                    runs `npm run build:deps --if-present` and then
+                    `package-build pdf`. A package whose book needs more first,
+                    such as generated API documentation, names a script that
+                    does it and ends in `package-build pdf`.
+                required: false
+                default: ""
+                type: string
             node-version:
                 description: >-
                     Deliberately an input although all six callers pass the
@@ -379,7 +400,7 @@ jobs:
                   VERSION: ${{ steps.decide.outputs.version }}
               run: |
                   mkdir -p build
-                  if ! npx --no-install package-build pdf --list-assets --book-version "$VERSION" > build/books.json 2>/dev/null; then
+                  if ! npx --no-install package-build pdf --list-assets --out build/dist --book-version "$VERSION" > build/books.json 2>/dev/null; then
                       echo "::notice::package-build cannot list the declared books; attaching every PDF in build/dist/ instead, titled by file name."
                       for book in build/dist/*.pdf; do
                           [ -e "$book" ] || continue
