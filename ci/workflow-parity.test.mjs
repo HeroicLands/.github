@@ -362,12 +362,14 @@ test("a Gitea runs-on without a declared mapping is refused", () => {
  * Gitea workflows with no GitHub copy: the parity check itself; the npm
  * release, whose GitHub half is each package's own `release.yml` because npm's
  * trusted publisher is bound to that file; and the full e2e run, which needs
- * the `e2e` runner and the Foundry stage it hosts.
+ * the `e2e` runner and the Foundry stage it hosts; and the Renovate run, which
+ * needs Gitea's API and the `lint` runner.
  */
 const GITEA_ONLY = [
     "workflow-parity.yml",
     "release-npm-package.yml",
     "e2e-full.yml",
+    "renovate.yml",
 ];
 
 test("every Gitea workflow file has a GitHub counterpart, apart from the Gitea-only ones", () => {

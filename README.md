@@ -833,6 +833,80 @@ node --test actions/*/*.test.mjs ci/*.test.mjs
 A pull request that touches either workflow directory, `ci/` or `actions/` runs
 the test and every action's tests through `.gitea/workflows/workflow-parity.yml`.
 
+## Renovate: dependency updates
+
+Dependency updates come from Renovate on Gitea. Dependabot's branches live on
+the GitHub mirror, which deletes every branch Gitea lacks, so only Renovate's
+Gitea pull requests survive. GitHub's Dependabot security alerts stay on; they
+write nothing.
+
+`.gitea/workflows/renovate.yml` runs on the `lint` runner every Sunday at 02:00
+Los Angeles time. Gitea evaluates cron in UTC, so the workflow fires at 09:00
+and 10:00 UTC and its first step keeps whichever is 02:00 locally. It runs a
+pinned Renovate release as the Gitea user `renovate` (organisation secret
+`RENOVATE_TOKEN`), autodiscovering `HeroicLands/*`. Archived repositories and
+forks are skipped. `RENOVATE_GITHUB_COM_TOKEN`, a read-only github.com token,
+supplies release notes when it exists and is not needed otherwise. No
+repository needs a Renovate file: `renovate/config.cjs` is the global
+configuration and merges the shared preset `default.json`. A repository that
+wants its own rules may add a `renovate.json` extending
+`local>HeroicLands/.github`.
+
+### What a run opens
+
+| Pull request | Branch | Merged |
+| --- | --- | --- |
+| All patch updates | `renovate/patch` | Automatically, once checks pass |
+| All minor updates, pins and digests | `renovate/minor` | By the owner |
+| Lockfile maintenance | `renovate/lock-file-maintenance` | By the owner |
+| Each major update | `renovate/<package>-<major>.x` | By the owner |
+
+Commit subjects read `chore(deps): update patch dependencies`. Declared ranges
+are kept: a version inside the range changes the lockfile only, and
+`peerDependencies` widen. Pull requests carry no labels, and at most four are
+open per repository.
+
+### How a patch pull request merges
+
+Renovate asks Gitea to squash-merge the patch pull request when its checks
+succeed. `main` still needs one approving review and Gitea cannot exempt a
+user, so the last step of the run approves it as `heroiclands-bot`
+(`RELEASE_BOT_TOKEN`) with `renovate/approve-patch-prs.mjs`. That script lists
+the open pull requests of every organisation repository and approves only an
+open, non-draft pull request from `renovate` on the branch `renovate/patch`,
+unless the bot's approval already stands on its current head commit. A new push
+dismisses the approval, and the next run approves again. Minor, major and
+lockfile pull requests are never approved by it.
+
+### Running it by hand
+
+Open Actions, choose Renovate and Run workflow. The inputs:
+
+- `dry-run`: `full` (the default) logs what Renovate would do and changes
+  nothing, `lookup` and `extract` stop earlier, `none` opens real pull requests
+  and approves the patch ones.
+- `repositories`: an autodiscover filter such as `HeroicLands/package-build`;
+  empty means every repository.
+- `ignore-schedule`: on by default, so a manual run is not held to the Sunday
+  window.
+
+Try a new configuration with `dry-run: full` and one repository, read the log,
+then run with `none` against that repository before the Sunday run takes over.
+`npx renovate-config-validator --strict default.json renovate/config.cjs`
+checks both files.
+
+### Pausing it
+
+The job runs only while the repository variable `HL_RENOVATE_ENABLED` is
+`true` on `HeroicLands/.github`. Set it to anything else, or disable the
+workflow, and nothing runs. Pull requests already open stay open; close them or
+pause the schedule with the variable before changing the preset.
+
+### Changing the Renovate version
+
+`RENOVATE_VERSION` in the workflow is an exact version. Raise it in a pull
+request here and validate both files with the new version first.
+
 ## `SECURITY.md`
 
 The organisation's default security policy, inherited by every repository that

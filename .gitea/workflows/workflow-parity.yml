@@ -12,6 +12,8 @@ on:
       - ".gitea/workflows/**"
       - "ci/**"
       - "actions/**"
+      - "renovate/**"
+      - "default.json"
 
 permissions:
   contents: read

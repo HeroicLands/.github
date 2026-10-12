@@ -1,0 +1,95 @@
+# Dependency updates for every HeroicLands repository on the Gitea forge.
+#
+# Renovate runs as the `renovate` user (org secret RENOVATE_TOKEN) with the
+# configuration in renovate/config.cjs, which merges the shared preset
+# default.json. Afterwards heroiclands-bot approves the patch-group pull
+# requests so their scheduled merges can land. Gitea evaluates cron in UTC, so
+# the schedule fires at both 09:00 and 10:00 on Sunday and the first step
+# keeps the one that is 02:00 in Los Angeles.
+#
+# A single job carries everything: Gitea skips a job whose `needs` was skipped
+# even under always(), so the gate is a step output read by step-level `if`s.
+
+name: Renovate
+
+on:
+  schedule:
+    - cron: "0 9,10 * * 0"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Renovate dry run: full (log only), lookup, extract, or none (open pull requests)."
+        type: choice
+        options: [full, lookup, extract, none]
+        default: full
+      repositories:
+        description: "Autodiscover filter, such as HeroicLands/package-build. Empty means HeroicLands/*."
+        type: string
+        default: ""
+      ignore-schedule:
+        description: "Run outside the Sunday window."
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renovate
+  cancel-in-progress: false
+
+jobs:
+  renovate:
+    if: github.server_url != 'https://github.com' && vars.HL_RENOVATE_ENABLED == 'true'
+    runs-on: lint
+    timeout-minutes: 120
+    steps:
+      - name: Select the Sunday 02:00 slot
+        id: slot
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          run=true
+          if [ "$EVENT_NAME" = schedule ]; then
+              run=false
+              # Pacific 02:00 is 09:00 UTC in daylight time and 10:00 UTC otherwise.
+              [ "$(TZ=America/Los_Angeles date +%H)" = 02 ] && run=true
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout code
+        if: steps.slot.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Run Renovate
+        if: steps.slot.outputs.run == 'true'
+        env:
+          RENOVATE_VERSION: 44.155.1
+          RENOVATE_CONFIG_FILE: ${{ github.workspace }}/renovate/config.cjs
+          RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
+          RENOVATE_GITHUB_COM_TOKEN: ${{ secrets.RENOVATE_GITHUB_COM_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          FILTER: ${{ inputs.repositories }}
+          IGNORE_SCHEDULE: ${{ inputs.ignore-schedule }}
+          LOG_LEVEL: info
+        run: |
+          if [ -z "$RENOVATE_TOKEN" ]; then
+              echo "RENOVATE_TOKEN is not set" >&2
+              exit 1
+          fi
+          [ -n "$RENOVATE_GITHUB_COM_TOKEN" ] || unset RENOVATE_GITHUB_COM_TOKEN
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+              [ "$DRY_RUN" = none ] || export RENOVATE_DRY_RUN="$DRY_RUN"
+              [ -z "$FILTER" ] || export RENOVATE_AUTODISCOVER_FILTER="$FILTER"
+              if [ "$IGNORE_SCHEDULE" = true ]; then
+                  export RENOVATE_FORCE='{"schedule":["at any time"],"lockFileMaintenance":{"schedule":["at any time"]}}'
+              fi
+          fi
+          npx --yes "renovate@$RENOVATE_VERSION"
+
+      - name: Approve the patch pull requests
+        if: ${{ !cancelled() && steps.slot.outputs.run == 'true' && (github.event_name == 'schedule' || inputs.dry-run == 'none') }}
+        env:
+          RELEASE_BOT_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
+        run: node renovate/approve-patch-prs.mjs

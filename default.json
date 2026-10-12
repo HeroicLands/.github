@@ -1,0 +1,51 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "HeroicLands dependency updates: one patch PR and one minor PR per repository each Sunday morning, majors separate.",
+  "timezone": "America/Los_Angeles",
+  "schedule": ["before 6am on sunday"],
+  "dependencyDashboard": false,
+  "labels": [],
+  "semanticCommits": "disabled",
+  "commitMessagePrefix": "chore(deps):",
+  "commitMessageLowerCase": "always",
+  "prBodyTemplate": "{{{table}}}{{{notes}}}",
+  "prConcurrentLimit": 4,
+  "prHourlyLimit": 0,
+  "rangeStrategy": "replace",
+  "automerge": false,
+  "automergeStrategy": "squash",
+  "platformAutomerge": true,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on sunday"],
+    "automerge": false,
+    "commitMessageAction": "refresh",
+    "commitMessageTopic": "lockfile"
+  },
+  "packageRules": [
+    {
+      "description": "Peer ranges widen so a published package keeps accepting the versions it already accepted.",
+      "matchDepTypes": ["peerDependencies"],
+      "rangeStrategy": "widen"
+    },
+    {
+      "description": "Every patch update of a repository in one PR; its checks gate the scheduled merge and heroiclands-bot approves it.",
+      "matchUpdateTypes": ["patch"],
+      "groupName": "patch dependencies",
+      "groupSlug": "patch",
+      "automerge": true
+    },
+    {
+      "description": "Every minor update of a repository in one PR, left for the owner.",
+      "matchUpdateTypes": ["minor", "pin", "pinDigest", "digest"],
+      "groupName": "minor dependencies",
+      "groupSlug": "minor",
+      "automerge": false
+    },
+    {
+      "description": "A major update is its own PR and is never merged automatically.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
+  ]
+}
