@@ -15,7 +15,7 @@ permissions:
 jobs:
   changesets:
     name: Changeset review
-    runs-on: ubuntu-latest
+    runs-on: light
     steps:
       - uses: actions/checkout@v4
       - uses: ./actions/changesets
@@ -24,7 +24,7 @@ jobs:
 
   action-tests:
     name: Changesets action tests
-    runs-on: ubuntu-latest
+    runs-on: light
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -20,6 +20,33 @@ const root = new URL("../", import.meta.url);
 const text = (forge, file) => readFileSync(new URL(`${forge}/workflows/${file}`, root), "utf8");
 const load = (forge, file) => parse(text(forge, file));
 
+/**
+ * Gitea runner labels that stand for GitHub's hosted `ubuntu-latest`. GitHub
+ * has no `light` or `lint` runners, so the GitHub copy of a job keeps
+ * `ubuntu-latest` while the Gitea copy routes it to a lighter host.
+ */
+const GITEA_LABELS_FOR_GITHUB = { light: "ubuntu-latest", lint: "ubuntu-latest" };
+
+/** Labels a Gitea job may ask for: the mapped ones and those the excelsior host serves. */
+const GITEA_LABELS = new Set(["ubuntu-latest", "ubuntu-vm", "x86", "linux", ...Object.keys(GITEA_LABELS_FOR_GITHUB)]);
+
+/** A Gitea `runs-on` as GitHub would spell it. A label in neither set throws. */
+function githubLabel(label) {
+    assert.ok(GITEA_LABELS.has(label), `runs-on: ${label} is not a runner label with a declared mapping`);
+    return GITEA_LABELS_FOR_GITHUB[label] ?? label;
+}
+
+/** A Gitea workflow with every job's `runs-on` mapped to the GitHub label. */
+function asGithub(workflow) {
+    const jobs = Object.fromEntries(
+        Object.entries(workflow.jobs ?? {}).map(([name, job]) => [
+            name,
+            "runs-on" in job ? { ...job, "runs-on": githubLabel(job["runs-on"]) } : job,
+        ]),
+    );
+    return { ...workflow, jobs };
+}
+
 const GITHUB = ".github";
 const GITEA = ".gitea";
 const HOST = "'https://github.com'";
@@ -259,8 +286,27 @@ test("deploy: the upload step is the same on both forges", () => {
 
 test("the pull-request workflows are the same file on both forges", () => {
     for (const file of ["changesets.yml", "no-attribution.yml"]) {
-        assert.deepEqual(load(GITEA, file), load(GITHUB, file), file);
+        assert.deepEqual(asGithub(load(GITEA, file)), load(GITHUB, file), file);
     }
+});
+
+test("every runs-on in a Gitea workflow is a declared label", () => {
+    let checked = 0;
+    for (const file of readdirSync(new URL(`${GITEA}/workflows/`, root))) {
+        for (const job of Object.values(load(GITEA, file).jobs ?? {})) {
+            if (!("runs-on" in job)) continue;
+            githubLabel(job["runs-on"]);
+            checked += 1;
+        }
+    }
+    assert.ok(checked > 0, "no runs-on was checked");
+});
+
+test("a Gitea runs-on without a declared mapping is refused", () => {
+    assert.throws(() => githubLabel("gpu"), /not a runner label/);
+    assert.equal(githubLabel("light"), "ubuntu-latest");
+    assert.equal(githubLabel("lint"), "ubuntu-latest");
+    assert.equal(githubLabel("ubuntu-vm"), "ubuntu-vm");
 });
 
 /**

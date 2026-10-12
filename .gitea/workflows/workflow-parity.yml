@@ -19,7 +19,7 @@ permissions:
 jobs:
   workflow-parity:
     name: Workflow parity
-    runs-on: ubuntu-latest
+    runs-on: light
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
