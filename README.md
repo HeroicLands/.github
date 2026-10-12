@@ -1400,6 +1400,5 @@ node --test actions/version-pr/version-pr.test.mjs actions/github-release/github
 
 ## `runners/`
 
-Configuration for the Gitea Actions runner hosts beyond excelsior: the shared
-job image, the Intrepid runners and the atlas runner. See
+The Dockerfiles for the Gitea Actions runners' job images. See
 [`runners/README.md`](runners/README.md).

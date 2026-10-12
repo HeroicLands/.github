@@ -22,12 +22,12 @@ const load = (forge, file) => parse(text(forge, file));
 
 /**
  * Gitea runner labels that stand for GitHub's hosted `ubuntu-latest`. GitHub
- * has no `light` or `lint` runners, so the GitHub copy of a job keeps
+ * has no `light`, `lint` or `e2e` runners, so the GitHub copy of a job keeps
  * `ubuntu-latest` while the Gitea copy routes it to a lighter host.
  */
-const GITEA_LABELS_FOR_GITHUB = { light: "ubuntu-latest", lint: "ubuntu-latest" };
+const GITEA_LABELS_FOR_GITHUB = { light: "ubuntu-latest", lint: "ubuntu-latest", e2e: "ubuntu-latest" };
 
-/** Labels a Gitea job may ask for: the mapped ones and those the excelsior host serves. */
+/** Labels a Gitea job may ask for: the mapped ones and those the build host serves. */
 const GITEA_LABELS = new Set(["ubuntu-latest", "ubuntu-vm", "x86", "linux", ...Object.keys(GITEA_LABELS_FOR_GITHUB)]);
 
 /** A Gitea `runs-on` as GitHub would spell it. A label in neither set throws. */

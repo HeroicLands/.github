@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Job image for container-mode runners (Intrepid, atlas). It carries the tool
-# set excelsior's host provides, for linux/amd64 and linux/arm64.
+# Job image for the container-mode runners. It carries the tool set the build
+# runner's host provides, for linux/amd64 and linux/arm64.
 
 # Digest of the multi-arch index for act-24.04.
 FROM catthehacker/ubuntu:act-24.04@sha256:c58e2b364da03b0c804c7d660f2ecbedf2f221a382b9baa0b344b0144780ff43
