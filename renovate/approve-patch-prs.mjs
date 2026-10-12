@@ -69,7 +69,11 @@ async function main() {
     };
 
     let failed = 0;
-    for (const repo of await pages(`/orgs/${org}/repos`)) {
+    // `/orgs/{org}/repos` needs read:organization, which the release bot's
+    // token does not carry; the bot owns the organization, so its own
+    // repository list holds every one.
+    const repos = (await pages("/user/repos")).filter((repo) => repo.owner?.login === org);
+    for (const repo of repos) {
         if (repo.archived) continue;
         const pulls = await pages(`/repos/${repo.full_name}/pulls?state=open`);
         for (const pr of pulls.filter(isPatchGroup)) {
