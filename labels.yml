@@ -1,0 +1,114 @@
+# The organisation labels, as the HeroicLands organisation on Gitea holds them.
+# Every repository uses these and none declares its own. The set is closed:
+# `actions/labels` removes an organisation label this file does not list.
+# `exclusive` makes a scope (`type/`, `resolution/`) take one label at a time.
+
+- name: type/bug
+  color: d73a4a
+  description: Something is broken
+  exclusive: true
+
+- name: type/epic
+  color: 3e4b9e
+  description: Parent of a body of related work
+  exclusive: true
+
+- name: type/feature
+  color: a2eeef
+  description: New capability
+  exclusive: true
+
+- name: type/spike
+  color: fbca04
+  description: Time-boxed investigation
+  exclusive: true
+
+- name: type/task
+  color: 0e8a16
+  description: Defined piece of work
+  exclusive: true
+
+- name: resolution/duplicate
+  color: cfd3d7
+  description: Already tracked by another issue or pull request
+  exclusive: true
+
+- name: resolution/wontfix
+  color: ffffff
+  description: Work that will not be pursued.
+  exclusive: true
+
+- name: status/blocked
+  color: c5702e
+  description: Cannot proceed until an external dependency, decision, or another issue clears.
+  exclusive: false
+
+- name: status/question
+  color: 0f5594
+  description: Further information is requested
+  exclusive: false
+
+- name: flag/breaking-change
+  color: 8d0f09
+  description: "Alters a public contract consumers or existing worlds depend on: an API, CLI, configuration, data model, document ID, shortcode, or pack compatibility."
+  exclusive: false
+
+- name: flag/regression
+  color: d93f0b
+  description: Something that previously worked and stopped. Pairs with `type/bug`.
+  exclusive: false
+
+- name: flag/security
+  color: b60205
+  description: "Attack surface: data integrity, untrusted content, script execution, injection, path traversal, subprocess handling, or private disclosure."
+  exclusive: false
+
+- name: flag/tech-debt
+  color: 68691b
+  description: Restructuring or cleanup of working code, content, or tooling with no change in behavior.
+  exclusive: false
+
+- name: area/content
+  color: 58ec8d
+  description: "Package material: notes, compendium packs, actors, items, journals, scenes, artwork"
+  exclusive: false
+
+- name: area/devops
+  color: e07b31
+  description: Build, tooling, CI, release pipeline, and repository configuration
+  exclusive: false
+
+- name: area/documentation
+  color: 0075ca
+  description: "Documentation: README, guides, developer docs, API docs, process."
+  exclusive: false
+
+- name: area/layout
+  color: "5319e7"
+  description: "Templates, partials, and shortcodes: the structure a page renders into."
+  exclusive: false
+
+- name: area/site
+  color: 24bdb0
+  description: "A website: Hugo build, layouts, rendered content, Cloudflare Pages deployment"
+  exclusive: false
+
+- name: area/styling
+  color: c2a3ff
+  description: "CSS, fonts, icons, and palette: how a rendered page looks."
+  exclusive: false
+
+- name: area/system
+  color: f4f37c
+  description: "Foundry VTT game-system code: Typescript, data models, sheets, logic."
+  exclusive: false
+
+- name: area/tests
+  color: 44e6ce
+  description: Test suites, fixtures, and test harnesses
+  exclusive: false
+
+- name: ci/e2e
+  color: 1d76db
+  description: On a pull request, requests the full Foundry end-to-end run before merge
+  exclusive: false

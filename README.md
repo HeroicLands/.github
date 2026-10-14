@@ -973,79 +973,74 @@ which must report `true` for all ten before #14 is done.
 
 ## `actions/labels`
 
-Checks a repository's `.github/labels.yml`, or syncs the forge's labels to it.
-It supports both GitHub and Gitea.
+Checks the HeroicLands organisation's issue labels against `labels.yml` at the
+root of this repository, or syncs them to it. Organisation labels exist on Gitea
+only; the action refuses to run on GitHub.
+
+Every repository uses the same organisation labels and declares none of its own.
+`labels.yml` is the one registry: the name, colour, description and exclusivity
+of each label, in the groups `type/`, `resolution/`, `status/`, `flag/`, `area/`
+and `ci/`. A pull request that changes it runs `check`; `main` runs `sync`.
 
 ```yaml
-# .github/workflows/labels.yml
+# .gitea/workflows/labels.yml
 name: Labels
 
 on:
   pull_request:
-    paths: [".github/labels.yml"]
+    paths: ["labels.yml"]
   push:
     branches: [main]
-    paths: [".github/labels.yml"]
-
-permissions:
-  issues: write
+    paths: ["labels.yml"]
 
 jobs:
   labels:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HeroicLands/.github/actions/labels@main
+      - uses: ./actions/labels
         with:
           # A pull request reports what a sync would change and writes nothing;
           # main applies it. The consequence is reviewed before it happens.
           mode: ${{ github.event_name == 'push' && 'sync' || 'check' }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          org: HeroicLands
+          token: ${{ secrets.LABELS_TOKEN }}
 ```
 
 | Input | Default | |
 | --- | --- | --- |
 | `mode` | `check` | `check` validates and reports; `sync` applies |
-| `registry` | `.github/labels.yml` | path to the registry |
-| `token` | — | needs `issues: write`; without one, `check` validates the file alone |
+| `registry` | `labels.yml` | path to the registry |
+| `org` | — | the organisation whose labels are compared; without it, `check` validates the file alone |
+| `token` | — | a token that can write the organisation's labels; without one, `check` validates the file alone |
+
+A registry entry is `name`, `color`, an optional `description` of at most 255
+characters, and an optional `exclusive: true`, which makes the scope before the
+`/` (`type/`, `resolution/`) take one label at a time.
 
 **The registry is a closed set.** A label the file declares is created or
-corrected; a label the forge has and the file does not is **deleted**, along with
-its presence on every issue carrying it. That is the point of a registry rather
-than a starting point — labels otherwise accumulate from templates,
-integrations and typos until the set means nothing — and it is why `check` runs
-on the pull request that changes the file, so the deletion is reviewed before it
-is applied.
+corrected; a label the organisation has and the file does not is **deleted**,
+along with its presence on every issue carrying it. That is the point of a
+registry rather than a starting point — labels otherwise accumulate from
+templates, integrations and typos until the set means nothing — and it is why
+`check` runs on the pull request that changes the file, so the deletion is
+reviewed before it is applied.
 
 Findings are reported as `file:line:column: severity: message`, the form every
 C-family compiler and ESLint emit, so an error matcher resolves them without
 being taught the layout.
 
-### Both forges
-
-The API base is the job's `GITHUB_API_URL`, and the forge is GitHub exactly when
-`GITHUB_SERVER_URL` is `https://github.com`. The differences the action absorbs:
-
-| | GitHub | Gitea |
-| --- | --- | --- |
-| Address of an existing label | its name | its numeric id, read when the labels are listed |
-| Rename field of an update | `new_name` | `name` |
-| `exclusive: true` on a registry entry | not sent and not compared | sent, and compared against the repository |
-| Colour as listed | no `#` | no `#`; a leading `#` is stripped on either side before comparing |
-
-A registry entry may declare `exclusive: true`, which makes a scoped label
-(`scope/name`) mutually exclusive within its scope on Gitea. The lists are read
-to the end whatever the page size, which Gitea caps at 50.
+Gitea addresses a label by its numeric id, read when the labels are listed, and
+renames it with `name`. Colours are compared without a leading `#`. The lists
+are read to the end whatever the page size, which Gitea caps at 50.
 
 After a `sync`, the action reads the labels back and fails, naming each
 difference, when any label still differs from the registry. Gitea answers a
 delete with `204` even when it removed nothing, so the read-back is what proves
-a sync took effect. A `sync` on Gitea deletes every label the registry omits, so
-a repository's `labels.yml` lists all the labels it keeps before its first
-sync there.
+a sync took effect.
 
 Run the action's regression tests with `node --test actions/labels/*.test.mjs`;
-they run a label store that behaves as each forge does.
+they run an organisation label store that behaves as Gitea does.
 
 ## `actions/todos`
 

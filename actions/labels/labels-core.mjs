@@ -8,18 +8,17 @@
  * The registry and sync logic of the labels action, free of any dependency so
  * it can be exercised without installing the YAML parser.
  *
- * The two forges address a label differently. GitHub addresses it by name and
- * renames it with `new_name`. Gitea addresses it by numeric id and renames it
- * with `name`; a request that names a label rather than its id answers success
- * on a delete and removes nothing, so every change is confirmed by reading the
+ * The labels are an organisation's, on Gitea. Gitea addresses a label by numeric
+ * id; a request that names a label rather than its id answers success on a
+ * delete and removes nothing, so every change is confirmed by reading the
  * labels back.
  * @module
  */
 
 import { readAll, send } from "../lib/forge.mjs";
 
-/** The longest description either forge accepts. */
-export const MAX_DESCRIPTION = 100;
+/** The longest description Gitea accepts. */
+export const MAX_DESCRIPTION = 255;
 
 /** Where a literal sits in a text, so a finding about it can be opened. */
 export function positionOf(text, needle) {
@@ -89,14 +88,15 @@ export function buildRegistry(list, raw, file) {
 }
 
 /**
- * Every label the repository currently has.
+ * Every label the organisation currently has.
  *
  * @param {ReturnType<import("../lib/forge.mjs").forgeOf>} forge
+ * @param {string} org the organisation's name
  * @returns {Promise<Map<string, {id: number | undefined, name: string, color: string, description: string, exclusive: boolean}>>}
  */
-export async function currentLabels(forge, repo, token) {
+export async function currentLabels(forge, org, token) {
     const out = new Map();
-    for (const label of await readAll(forge, `/repos/${repo}/labels`, token)) {
+    for (const label of await readAll(forge, `/orgs/${org}/labels`, token)) {
         out.set(label.name, {
             id: label.id,
             name: label.name,
@@ -109,65 +109,60 @@ export async function currentLabels(forge, repo, token) {
 }
 
 /** Whether the two differ in anything the forge stores. */
-export function differs(forge, a, b) {
+export function differs(a, b) {
     return (
         a.color !== b.color ||
         a.description !== b.description ||
-        (!forge.github && a.exclusive !== b.exclusive)
+        a.exclusive !== b.exclusive
     );
 }
 
 /** What a sync would create, update and delete. */
-export function diff(forge, registry, current) {
+export function diff(registry, current) {
     const wanted = [...registry.values()];
     return {
         toCreate: wanted.filter((l) => !current.has(l.name)),
         toUpdate: wanted.filter(
-            (l) => current.has(l.name) && differs(forge, current.get(l.name), l),
+            (l) => current.has(l.name) && differs(current.get(l.name), l),
         ),
         toDelete: [...current.values()].filter((l) => !registry.has(l.name)),
     };
 }
 
-/** The path that addresses an existing label on this forge. */
-function addressOf(forge, repo, label) {
-    if (forge.github) return `/repos/${repo}/labels/${encodeURIComponent(label.name)}`;
+/** The path that addresses an existing label. */
+function addressOf(org, label) {
     if (label.id == null) {
         throw new Error(`label "${label.name}" came back without an id, so it cannot be addressed`);
     }
-    return `/repos/${repo}/labels/${label.id}`;
+    return `/orgs/${org}/labels/${label.id}`;
 }
 
 /**
- * Make the forge's labels match the registry, then read them back.
+ * Make the organisation's labels match the registry, then read them back.
  *
  * @returns {Promise<{created: number, updated: number, deleted: number, remaining: string[]}>}
  *   `remaining` names every label the forge still reports differently from the
  *   registry after the changes; a request the forge answered with success but
  *   did not carry out appears there
  */
-export async function sync(forge, repo, token, registry, current) {
-    const { toCreate, toUpdate, toDelete } = diff(forge, registry, current);
+export async function sync(forge, org, token, registry, current) {
+    const { toCreate, toUpdate, toDelete } = diff(registry, current);
+    const fields = (label) => ({
+        name: label.name,
+        color: label.color,
+        description: label.description,
+        exclusive: label.exclusive,
+    });
     for (const label of toCreate) {
-        await send(forge, "POST", `/repos/${repo}/labels`, token, {
-            name: label.name,
-            color: label.color,
-            description: label.description,
-            ...(forge.github ? {} : { exclusive: label.exclusive }),
-        });
+        await send(forge, "POST", `/orgs/${org}/labels`, token, fields(label));
     }
     for (const label of toUpdate) {
-        await send(forge, "PATCH", addressOf(forge, repo, current.get(label.name)), token, {
-            [forge.github ? "new_name" : "name"]: label.name,
-            color: label.color,
-            description: label.description,
-            ...(forge.github ? {} : { exclusive: label.exclusive }),
-        });
+        await send(forge, "PATCH", addressOf(org, current.get(label.name)), token, fields(label));
     }
     for (const label of toDelete) {
-        await send(forge, "DELETE", addressOf(forge, repo, label), token);
+        await send(forge, "DELETE", addressOf(org, label), token);
     }
-    const after = diff(forge, registry, await currentLabels(forge, repo, token));
+    const after = diff(registry, await currentLabels(forge, org, token));
     return {
         created: toCreate.length,
         updated: toUpdate.length,

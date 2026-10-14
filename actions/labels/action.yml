@@ -1,8 +1,8 @@
-name: Repository labels
+name: Organisation labels
 description: >-
-  Check a repository's .github/labels.yml, or sync the forge's labels to it. The
-  registry is a closed set: a label the forge has and the file does not is
-  removed. Runs on GitHub and on Gitea.
+  Check an organisation's labels against a registry file, or sync them to it. The
+  registry is a closed set: a label the organisation has and the file does not
+  is removed. Gitea only.
 
 inputs:
   mode:
@@ -12,14 +12,20 @@ inputs:
     required: false
     default: check
   registry:
-    description: Path to the label registry, relative to the repository root.
+    description: Path to the label registry, relative to the checkout root.
     required: false
-    default: .github/labels.yml
+    default: labels.yml
+  org:
+    description: >-
+      The organisation whose labels are compared. Without it, the registry is
+      validated and nothing is compared.
+    required: false
+    default: ""
   token:
     description: >-
-      A token with `issues: write`. Required for `sync`; `check` reads the
-      repository's labels and so wants one too, but degrades to validating the
-      file alone without it.
+      A token that can write the organisation's labels. Required for `sync`;
+      `check` reads the labels and so wants one too, but degrades to
+      validating the file alone without it.
     required: false
     default: ""
 
@@ -35,5 +41,6 @@ runs:
       env:
         LABELS_MODE: ${{ inputs.mode }}
         LABELS_REGISTRY: ${{ inputs.registry }}
+        LABELS_ORG: ${{ inputs.org }}
         GITHUB_TOKEN: ${{ inputs.token }}
       run: node "$GITHUB_ACTION_PATH/labels.mjs"

@@ -5,17 +5,16 @@
  */
 
 /**
- * **A repository's labels, from its own `.github/labels.yml`.**
+ * **An organisation's labels, from a registry file.**
  *
- * Every HeroicLands repository wants the same label set and the same rule about
- * it, and each was carrying its own copy of the script that applied them —
- * `sync-labels.mjs`, 95% identical across three repositories and drifted in all
- * three. Labels are neither a content tree nor a Foundry package, so neither
- * build toolchain is the right home; what they are is repository governance,
- * which is CI-shaped. Hence an action.
+ * Every HeroicLands repository uses the same organisation-level labels, held
+ * once in the registry. Labels are neither a content tree nor a Foundry
+ * package, so neither build toolchain is the right home; what they are is
+ * organisation governance, which is CI-shaped. Hence an action. Organisation
+ * labels exist on Gitea only.
  *
  * **The registry is a closed set.** A label the file declares is created or
- * corrected; a label the forge has and the file does not is *deleted*. That is the
+ * corrected; a label the organisation has and the file does not is *deleted*. That is the
  * point of a registry rather than a starting point: labels accumulate from
  * templates, integrations and typos, and a set nobody prunes stops meaning
  * anything. Deletion removes the label from issues that carry it, which is why
@@ -37,8 +36,8 @@ import { ApiError, forgeOf } from "../lib/forge.mjs";
 import { buildRegistry, currentLabels, diff, sync } from "./labels-core.mjs";
 
 const MODE = process.env.LABELS_MODE ?? "check";
-const REGISTRY = process.env.LABELS_REGISTRY ?? ".github/labels.yml";
-const REPO = process.env.GITHUB_REPOSITORY;
+const REGISTRY = process.env.LABELS_REGISTRY ?? "labels.yml";
+const ORG = process.env.LABELS_ORG;
 const TOKEN = process.env.GITHUB_TOKEN;
 const FORGE = forgeOf();
 
@@ -59,24 +58,31 @@ function readRegistry() {
 
 const registry = readRegistry();
 
-if (!REPO) {
+if (!ORG) {
     console.log(
         `labels: ${registry.size} label(s) declared and well-formed. ` +
-            "No repository in the environment, so nothing was compared.",
+            "No organisation named, so nothing was compared.",
     );
     process.exit(0);
+}
+if (FORGE.github) {
+    report({
+        file: REGISTRY,
+        message: "organisation labels exist on Gitea only; this job runs on GitHub",
+    });
+    process.exit(1);
 }
 if (!TOKEN) {
     console.log(
         `labels: ${registry.size} label(s) declared and well-formed. ` +
-            "No token supplied, so the repository's labels were not read.",
+            "No token supplied, so the organisation's labels were not read.",
     );
     process.exit(0);
 }
 
 try {
-    const current = await currentLabels(FORGE, REPO, TOKEN);
-    const { toCreate, toUpdate, toDelete } = diff(FORGE, registry, current);
+    const current = await currentLabels(FORGE, ORG, TOKEN);
+    const { toCreate, toUpdate, toDelete } = diff(registry, current);
 
     const plan = [
         ...toCreate.map((l) => `  + ${l.name}`),
@@ -86,19 +92,19 @@ try {
 
     if (MODE !== "sync") {
         if (!plan.length) {
-            console.log(`labels: the repository matches ${REGISTRY} (${registry.size}).`);
+            console.log(`labels: ${ORG} matches ${REGISTRY} (${registry.size}).`);
             process.exit(0);
         }
         console.log(`labels: syncing ${REGISTRY} would change ${plan.length}:`);
         console.log(plan.join("\n"));
         console.log(
             "\nThe registry is a closed set, so a label marked `-` would be " +
-                "deleted from the repository and from every issue carrying it.",
+                "deleted from the organisation and from every issue carrying it.",
         );
         process.exit(0);
     }
 
-    const result = await sync(FORGE, REPO, TOKEN, registry, current);
+    const result = await sync(FORGE, ORG, TOKEN, registry, current);
     if (result.remaining.length) {
         report({
             file: REGISTRY,
@@ -112,7 +118,7 @@ try {
         plan.length ?
             `labels: synced — ${result.created} created, ${result.updated} ` +
                 `updated, ${result.deleted} deleted.`
-        :   `labels: the repository already matched ${REGISTRY} (${registry.size}).`,
+        :   `labels: ${ORG} already matched ${REGISTRY} (${registry.size}).`,
     );
 } catch (error) {
     if (!(error instanceof ApiError)) throw error;

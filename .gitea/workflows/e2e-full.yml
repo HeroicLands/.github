@@ -2,7 +2,7 @@
 # `e2e` runner.
 #
 # A caller owns its triggers: a nightly `schedule`, `workflow_dispatch`, and a
-# pull request labelled `e2e`. Gitea evaluates `on.schedule` cron in UTC.
+# pull request labelled `ci/e2e`. Gitea evaluates `on.schedule` cron in UTC.
 #
 # WHAT THE RUNNER PROVIDES (the `e2e` runner configuration): the `ci-e2e` image
 # (Cypress's system libraries, Xvfb and a Chromium), the docker socket,
