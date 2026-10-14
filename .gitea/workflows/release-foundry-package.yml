@@ -721,7 +721,7 @@ jobs:
             #
             # The books attached are exactly those the "List the declared
             # books" step names. A glob that matches nothing is not an error, so
-            # a package that builds no content index releases unchanged.
+            # a package that builds no content index or pictures releases unchanged.
             - name: Create GitHub Release
               if: steps.decide.outputs.release == 'true'
               uses: HeroicLands/.github/actions/github-release@main
@@ -737,6 +737,8 @@ jobs:
                       build/dist/${{ inputs.package-kind }}.zip
                       build/dist/${{ inputs.package-kind }}.json
                       build/dist/*.jsonl
+                      build/dist/icons.zip
+                      build/dist/images.zip
                       ${{ steps.books.outputs.files }}
 
             # The escape hatch, run only after the Release exists. One npm

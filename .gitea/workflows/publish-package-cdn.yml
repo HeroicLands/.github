@@ -1,0 +1,118 @@
+name: Publish pictures to the CDN
+
+# Upload every picture a package has to the CDN and publish the art the package
+# leaves out as a named asset set, with `package-build cdn publish`. Called as
+# `HeroicLands/.github/.gitea/workflows/publish-package-cdn.yml@main`, or
+# dispatched by hand in a package repository that carries a thin caller.
+#
+# It runs only when someone starts it: no build or release runs it. It has no
+# GitHub counterpart; the CDN credentials live on this forge.
+#
+# The calling repository's `package-build` is the one that runs, so the
+# package's `packageBuild.assetTransform` and `shippingLicenses` decide what
+# uploads. `--dry-run` lists what would upload and writes nothing.
+
+on:
+    workflow_call:
+        inputs:
+            set:
+                description: >-
+                    The set file's name under the package's CDN root, a `.json`
+                    file other than `default.json`.
+                required: true
+                type: string
+            name:
+                description: The set's display name.
+                required: true
+                type: string
+            dry-run:
+                description: List what would upload and what is skipped; write nothing.
+                required: false
+                default: false
+                type: boolean
+            node-version:
+                description: The Node major the publish runs under.
+                required: false
+                default: "24"
+                type: string
+        secrets:
+            CDN_ENDPOINT:
+                description: The S3 endpoint of the bucket served at `site.assets`.
+                required: true
+            CDN_BUCKET:
+                description: The bucket name.
+                required: true
+            CDN_ACCESS_KEY_ID:
+                description: The access key id with write access to the bucket.
+                required: true
+            CDN_SECRET_ACCESS_KEY:
+                description: The secret access key paired with the access key id.
+                required: true
+    workflow_dispatch:
+        inputs:
+            set:
+                description: The set file's name under the package's CDN root, such as `ai-art.json`.
+                required: true
+                type: string
+            name:
+                description: The set's display name.
+                required: true
+                type: string
+            dry-run:
+                description: List what would upload and what is skipped; write nothing.
+                required: false
+                default: false
+                type: boolean
+            node-version:
+                description: The Node major the publish runs under.
+                required: false
+                default: "24"
+                type: string
+
+permissions:
+    contents: read
+
+jobs:
+    publish:
+        name: Publish to the CDN
+        # Gitea only; a GitHub run has no credentials for the bucket.
+        if: ${{ github.server_url != 'https://github.com' }}
+        runs-on: ubuntu-latest
+        timeout-minutes: 60
+
+        # Job-level: workflow-level `concurrency` in a called workflow is
+        # evaluated in the caller's context. One publish per package at a time.
+        concurrency:
+            group: cdn-publish-${{ github.repository }}
+            cancel-in-progress: false
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v7
+              with:
+                  node-version: ${{ inputs.node-version }}
+                  cache: npm
+
+            - name: Install dependencies
+              run: npm ci --no-audit --no-fund
+
+            # Inputs reach the script through the environment, never through
+            # interpolation into it.
+            - name: Publish the pictures
+              env:
+                  SET: ${{ inputs.set }}
+                  SET_NAME: ${{ inputs.name }}
+                  DRY_RUN: ${{ inputs.dry-run }}
+                  CDN_ENDPOINT: ${{ secrets.CDN_ENDPOINT }}
+                  CDN_BUCKET: ${{ secrets.CDN_BUCKET }}
+                  CDN_ACCESS_KEY_ID: ${{ secrets.CDN_ACCESS_KEY_ID }}
+                  CDN_SECRET_ACCESS_KEY: ${{ secrets.CDN_SECRET_ACCESS_KEY }}
+              run: |
+                  args=(--set "$SET" --name "$SET_NAME")
+                  if [ "$DRY_RUN" = "true" ]; then
+                      args+=(--dry-run)
+                  fi
+                  npx --no-install package-build cdn publish "${args[@]}"

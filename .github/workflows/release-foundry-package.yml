@@ -533,6 +533,8 @@ jobs:
                       build/dist/${{ inputs.package-kind }}.zip
                       build/dist/${{ inputs.package-kind }}.json
                       build/dist/*.jsonl
+                      build/dist/icons.zip
+                      build/dist/images.zip
                       ${{ steps.books.outputs.files }}
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

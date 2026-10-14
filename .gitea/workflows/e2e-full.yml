@@ -41,6 +41,15 @@ on:
         required: false
         default: build:noci
         type: string
+      s3:
+        description: >-
+          Run the container with an S3-compatible server
+          (`FOUNDRYVTT_CONTAINER_S3=1`) and tell the suite so
+          (`SOHL_E2E_S3=1`). The package supplies the server's configuration
+          under `cypress/s3/`.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -57,6 +66,7 @@ jobs:
       - name: Place the package's settings
         env:
           PACKAGE: ${{ inputs.package }}
+          S3: ${{ inputs.s3 }}
         run: |
           case "$PACKAGE" in
             ''|*[!a-z0-9-]*) echo "::error::package '$PACKAGE' is not a package id" >&2; exit 1 ;;
@@ -76,6 +86,10 @@ jobs:
             echo "FOUNDRYVTT_CACHE=$HL_E2E_ROOT/cache"
             echo "CYPRESS_CACHE_FOLDER=$HL_E2E_ROOT/cypress"
             echo "npm_config_cache=$HL_E2E_ROOT/npm"
+            if [ "$S3" = "true" ]; then
+              echo "FOUNDRYVTT_CONTAINER_S3=1"
+              echo "SOHL_E2E_S3=1"
+            fi
           } >> "$GITHUB_ENV"
 
       - name: Install dependencies

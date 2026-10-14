@@ -278,6 +278,8 @@ test("release: the script names, the asset guard and the release asset list are 
         "build/dist/${{ inputs.package-kind }}.zip",
         "build/dist/${{ inputs.package-kind }}.json",
         "build/dist/*.jsonl",
+        "build/dist/icons.zip",
+        "build/dist/images.zip",
         "${{ steps.books.outputs.files }}",
     ]);
     assert.equal(giteaRelease["body-path"], githubRelease.body_path);
@@ -363,13 +365,15 @@ test("a Gitea runs-on without a declared mapping is refused", () => {
  * release, whose GitHub half is each package's own `release.yml` because npm's
  * trusted publisher is bound to that file; and the full e2e run, which needs
  * the `e2e` runner and the Foundry stage it hosts; and the Renovate run, which
- * needs Gitea's API and the `lint` runner.
+ * needs Gitea's API and the `lint` runner; and the CDN publish, whose credentials
+ * live on Gitea.
  */
 const GITEA_ONLY = [
     "workflow-parity.yml",
     "release-npm-package.yml",
     "e2e-full.yml",
     "renovate.yml",
+    "publish-package-cdn.yml",
 ];
 
 test("every Gitea workflow file has a GitHub counterpart, apart from the Gitea-only ones", () => {
@@ -509,7 +513,9 @@ describe("e2e-full.yml", () => {
     test("it is only called, and takes the package and its build script", () => {
         assert.deepEqual(Object.keys(workflow.on), ["workflow_call"]);
         const inputs = workflow.on.workflow_call.inputs;
-        assert.deepEqual(Object.keys(inputs).sort(), ["build-script", "package"]);
+        assert.deepEqual(Object.keys(inputs).sort(), ["build-script", "package", "s3"]);
+        assert.equal(inputs.s3.default, false);
+        assert.equal(inputs.s3.type, "boolean");
         assert.equal(inputs.package.required, true);
         assert.equal(inputs["build-script"].default, "build:noci");
         assert.equal(workflow.on.workflow_call.secrets, undefined);
@@ -549,6 +555,9 @@ describe("e2e-full.yml", () => {
     test("the settings come from the runner's secrets directory and the data root from its e2e root", () => {
         const place = steps.get("Place the package's settings");
         assert.equal(place.env.PACKAGE, "${{ inputs.package }}");
+        assert.equal(place.env.S3, "${{ inputs.s3 }}");
+        assert.ok(place.run.includes('echo "FOUNDRYVTT_CONTAINER_S3=1"'));
+        assert.ok(place.run.includes('echo "SOHL_E2E_S3=1"'));
         assert.match(place.run, /settings="\$HL_E2E_SECRETS\/\$PACKAGE\.env\.local"/);
         assert.match(place.run, /install -m 600 "\$settings" \.env\.local/);
         for (const line of [
