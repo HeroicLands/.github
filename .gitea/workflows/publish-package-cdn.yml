@@ -51,7 +51,7 @@ on:
     workflow_dispatch:
         inputs:
             set:
-                description: The set file's name under the package's CDN root, such as `ai-art.json`.
+                description: The set file's name under the package's CDN root, such as `alt-art.json`.
                 required: true
                 type: string
             name:
