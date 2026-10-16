@@ -10,6 +10,77 @@ single command line and is scoped by what it *reads*: the content tree, `lang/`,
 `styles/`, `src/`, the assets and the manifest. Repository governance is none of
 those, which is what this repository is for.
 
+## Local git hooks and `actions/githooks`
+
+`githooks/` is the canonical set copied unchanged into each repository’s
+`.githooks/`. Both hooks run with POSIX `sh`, Git and standard POSIX utilities;
+they need no Node, npm or Python installation. The message hook needs an
+available UTF-8 locale to recognize Unicode decoration while preserving prose.
+It uses the inherited UTF-8 locale or selects an installed UTF-8 locale within
+its own process, including when the caller uses `LC_ALL=C`. If none is available,
+it asks for one to be installed or enabled and refuses the commit.
+
+- `pre-commit` refuses commits on `main` and `master`. Feature branches and
+  detached HEAD are allowed. `git config hooks.protectedBranch false` or
+  `git config hooks.allowCommitOnMain true` disables this guard for a clone.
+- `commit-msg` applies the bounded assistant-credit grammar documented under
+  `actions/no-attribution` below. Ordinary prose and human coauthor identities
+  pass. Git comment lines and everything after its verbose-diff scissors line
+  are ignored. `git config hooks.noAttribution false` disables this local guard.
+
+Install or refresh the tracked copy from the canonical repository:
+
+```sh
+canonical=$(mktemp -d)
+git clone --depth 1 https://github.com/HeroicLands/.github.git "$canonical"
+mkdir -p .githooks
+cp "$canonical"/githooks/* .githooks/
+chmod +x .githooks/commit-msg .githooks/pre-commit
+rm -rf "$canonical"
+git config core.hooksPath .githooks
+```
+
+Commit `.githooks/` with its executable bits. When refreshing, remove any extra
+files the drift check reports. Run `git config core.hooksPath .githooks` from the
+repository’s native setup step so each new clone installs the hooks. A repository
+that uses npm can include that command in its `prepare` script; a repository
+without npm can put it in its setup shell script. Local configuration applies
+to this clone. `git commit --no-verify` bypasses both local guards; server and
+pull-request checks still enforce their rules.
+
+Run the drift action after checking out the consuming repository, on either
+forge:
+
+```yaml
+name: Git hooks
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+permissions:
+  contents: read
+jobs:
+  githooks:
+    name: Canonical git hooks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: HeroicLands/.github/actions/githooks@main
+```
+
+The action compares the checkout’s `.githooks/` with the `githooks/` tracked in
+its own action repository, resolved through `github.action_path`. It reports
+every missing, different or extra hook by path and fails without editing files.
+No token or toolchain installation is needed. Updating means copying the
+canonical files again; local exceptions belong in Git configuration.
+
+Run the shell integration tests and the shared grammar tests with:
+
+```sh
+npm ci --prefix ci
+sh ci/githooks.test.sh
+node --test ci/githooks.test.mjs
+```
+
 ## `.github/workflows/deploy-package-site.yml`
 
 Its job runs only on GitHub (`github.server_url == 'https://github.com'`); a
@@ -1150,9 +1221,10 @@ Nothing is edited. Correct the PR title or body directly. For an offending
 pushed commit, consult the maintainer about correcting its message without
 rewriting shared history.
 
-The commit hooks shipped by `@heroiclands/package-build` apply the same grammar
-before a commit exists. Their matcher and fixture matrix agree with this action;
-publication and dependency adoption deliver hook changes to local consumers.
+The canonical `githooks/commit-msg` applies the same grammar before a commit
+exists. Its regression tests derive the identities, phrases, mailboxes and
+fixture matrix from this action. Repositories copy the canonical hooks and
+check them with `actions/githooks`.
 
 Run the action's regression tests with:
 

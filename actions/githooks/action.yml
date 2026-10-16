@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: Canonical git hooks
+description: Fail when the checkout has missing, different or extra local git hooks.
+
+runs:
+  using: composite
+  steps:
+    - name: Check local git hooks against the canonical set
+      shell: sh
+      env:
+        CANONICAL_HOOK_ACTION: ${{ github.action_path }}
+      run: sh "$CANONICAL_HOOK_ACTION/check.sh" .githooks

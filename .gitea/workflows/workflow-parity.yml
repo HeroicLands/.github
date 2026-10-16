@@ -11,6 +11,7 @@ on:
       - ".github/workflows/**"
       - ".gitea/workflows/**"
       - "ci/**"
+      - "githooks/**"
       - "actions/**"
       - "renovate/**"
       - "default.json"
@@ -28,5 +29,6 @@ jobs:
         with:
           node-version: "24"
       - run: npm ci --prefix ci
+      - run: sh ci/githooks.test.sh
       - run: node --test ci/*.test.mjs
       - run: node --test actions/*/*.test.mjs

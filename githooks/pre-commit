@@ -1,0 +1,17 @@
+#!/bin/sh
+# Copyright (c) 2024-2026 Tom Rodriguez ("Toasty") — <toasty@heroiclands.org>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+value=$(git config --bool hooks.protectedBranch 2>/dev/null) || value=
+[ "$value" != false ] || exit 0
+[ "$(git config --bool hooks.allowCommitOnMain 2>/dev/null)" != true ] || exit 0
+branch=$(git symbolic-ref --quiet --short HEAD) || exit 0
+case "$branch" in
+    main | master) ;;
+    *) exit 0 ;;
+esac
+printf "%s\n" "pre-commit: refusing to commit on the protected branch '$branch'." \
+    "Create a branch with 'git switch -c <branch>' and commit again." \
+    "To opt this clone out, run 'git config hooks.protectedBranch false' or" \
+    "'git config hooks.allowCommitOnMain true'." >&2
+exit 1
