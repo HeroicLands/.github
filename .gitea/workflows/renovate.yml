@@ -3,9 +3,13 @@
 # Renovate runs as the `renovate` user (org secret RENOVATE_TOKEN) with the
 # configuration in renovate/config.cjs, which merges the shared preset
 # default.json. Afterwards heroiclands-bot approves the patch-group and
-# lockfile-maintenance pull requests so their scheduled merges can land. Gitea evaluates cron in UTC, so
-# the schedule fires at both 09:00 and 10:00 on Sunday and the first step
-# keeps the one that is 02:00 in Los Angeles.
+# lockfile-maintenance pull requests so their scheduled merges can land.
+#
+# The workflow runs every night at 02:00 in Los Angeles. The preset's own
+# schedule opens new pull requests only on Sunday; on the other nights Renovate
+# keeps the open ones current, rebuilding any that conflict with `main`. Gitea
+# evaluates cron in UTC, so the cron fires at both 09:00 and 10:00 and the first
+# step keeps the one that is 02:00 in Los Angeles.
 #
 # A single job carries everything: Gitea skips a job whose `needs` was skipped
 # even under always(), so the gate is a step output read by step-level `if`s.
@@ -14,7 +18,7 @@ name: Renovate
 
 on:
   schedule:
-    - cron: "0 9,10 * * 0"
+    - cron: "0 9,10 * * *"
   workflow_dispatch:
     inputs:
       dry-run:
@@ -44,7 +48,7 @@ jobs:
     runs-on: lint
     timeout-minutes: 120
     steps:
-      - name: Select the Sunday 02:00 slot
+      - name: Select the 02:00 slot
         id: slot
         env:
           EVENT_NAME: ${{ github.event_name }}

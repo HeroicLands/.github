@@ -88,8 +88,14 @@ describe("renovate.yml", () => {
     });
 
     test("the cron fires at both Pacific-02:00 UTC hours and the first step selects one", () => {
-        assert.deepEqual(workflow.on.schedule, [{ cron: "0 9,10 * * 0" }]);
+        assert.deepEqual(workflow.on.schedule, [{ cron: "0 9,10 * * *" }]);
         assert.match(job.steps[0].run, /America\/Los_Angeles/);
+    });
+
+    test("new pull requests open on Sunday, and the nightly runs keep the open ones current", () => {
+        assert.deepEqual(preset.schedule, ["before 6am on sunday"]);
+        assert.deepEqual(preset.lockFileMaintenance.schedule, ["before 6am on sunday"]);
+        assert.equal(preset.updateNotScheduled, true);
     });
 
     test("Renovate is pinned to an exact version", () => {

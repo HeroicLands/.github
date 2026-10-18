@@ -850,8 +850,12 @@ the GitHub mirror, which deletes every branch Gitea lacks, so only Renovate's
 Gitea pull requests survive. GitHub's Dependabot security alerts stay on; they
 write nothing.
 
-`.gitea/workflows/renovate.yml` runs on the `lint` runner every Sunday at 02:00
-Los Angeles time. Gitea evaluates cron in UTC, so the workflow fires at 09:00
+`.gitea/workflows/renovate.yml` runs on the `lint` runner every night at 02:00
+Los Angeles time. New pull requests open only on Sunday, the preset's own
+schedule; on every night Renovate keeps the open ones current, rebuilding any
+that conflict with `main` on a fresh branch, so a dependency pull request is
+never edited by hand. A commit by anyone else on a Renovate branch stops
+Renovate maintaining it. Gitea evaluates cron in UTC, so the workflow fires at 09:00
 and 10:00 UTC and its first step keeps whichever is 02:00 locally. It runs a
 pinned Renovate release as the Gitea user `renovate` (organisation secret
 `RENOVATE_TOKEN`), autodiscovering `HeroicLands/*`. Archived repositories and
@@ -899,11 +903,11 @@ Open Actions, choose Renovate and Run workflow. The inputs:
   and approves the patch ones.
 - `repositories`: an autodiscover filter such as `HeroicLands/package-build`;
   empty means every repository.
-- `ignore-schedule`: on by default, so a manual run is not held to the Sunday
-  window.
+- `ignore-schedule`: on by default, so a manual run opens new pull requests
+  outside the Sunday window.
 
 Try a new configuration with `dry-run: full` and one repository, read the log,
-then run with `none` against that repository before the Sunday run takes over.
+then run with `none` against that repository before the nightly run takes over.
 `npx renovate-config-validator --strict default.json renovate/config.cjs`
 checks both files.
 

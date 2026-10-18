@@ -3,6 +3,7 @@
   "description": "HeroicLands dependency updates: one patch PR and one minor PR per repository each Sunday morning, majors separate.",
   "timezone": "America/Los_Angeles",
   "schedule": ["before 6am on sunday"],
+  "updateNotScheduled": true,
   "dependencyDashboard": false,
   "labels": [],
   "semanticCommits": "disabled",
