@@ -2,7 +2,7 @@
 
 /**
  * The Renovate run: its workflow, its configuration and the approval of patch
- * pull requests. Needs `yaml`: `npm ci --prefix ci`.
+ * and lockfile pull requests. Needs `yaml`: `npm ci --prefix ci`.
  */
 
 import assert from "node:assert/strict";
@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { describe, test } from "node:test";
 import { parse } from "yaml";
-import { isApprovedAtHead, isPatchGroup, needingApproval } from "../renovate/approve-patch-prs.mjs";
+import { APPROVED_BRANCHES, isApprovedAtHead, isAutoApproved, needingApproval } from "../renovate/approve-dependency-prs.mjs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
@@ -31,17 +31,19 @@ const approval = (over = {}) => ({ user: { login: "heroiclands-bot" }, state: "A
 describe("the preset", () => {
     const rule = (type) => preset.packageRules.find((r) => r.matchUpdateTypes?.includes(type));
 
-    test("only the patch group merges by itself", () => {
+    test("only the patch group and the lockfile refresh merge by themselves", () => {
         assert.equal(rule("patch").automerge, true);
         assert.equal(rule("patch").groupSlug, "patch");
         for (const type of ["minor", "major"]) assert.equal(rule(type).automerge, false, type);
-        assert.equal(preset.lockFileMaintenance.automerge, false);
+        assert.equal(preset.lockFileMaintenance.automerge, true);
         assert.equal(preset.automerge, false);
         assert.equal(preset.platformAutomerge, true);
     });
 
     test("the patch group's branch is the one the approval step looks for", () => {
-        assert.equal(`renovate/${rule("patch").groupSlug}`, "renovate/patch");
+        assert.ok(APPROVED_BRANCHES.includes(`renovate/${rule("patch").groupSlug}`));
+        assert.ok(APPROVED_BRANCHES.includes("renovate/lock-file-maintenance"));
+        assert.ok(!APPROVED_BRANCHES.includes(`renovate/${rule("minor").groupSlug}`));
         assert.notEqual(rule("minor").groupSlug, rule("patch").groupSlug);
     });
 
@@ -92,22 +94,22 @@ describe("renovate.yml", () => {
     test("the tokens are the declared ones and the approval uses the release bot", () => {
         const used = new Set([...source.matchAll(/secrets\.([A-Za-z_]+)/g)].map((m) => m[1]));
         assert.deepEqual([...used].sort(), ["RELEASE_BOT_TOKEN", "RENOVATE_GITHUB_COM_TOKEN", "RENOVATE_TOKEN"]);
-        const approve = job.steps.find((s) => s.name === "Approve the patch pull requests");
+        const approve = job.steps.find((s) => s.name === "Approve the patch and lockfile pull requests");
         assert.deepEqual(Object.keys(approve.env), ["RELEASE_BOT_TOKEN"]);
         assert.match(approve.if, /dry-run == 'none'/);
     });
 });
 
-describe("approving patch pull requests", () => {
-    test("only the open patch group from the dependency user qualifies", () => {
-        assert.equal(isPatchGroup(pr()), true);
-        assert.equal(isPatchGroup(pr({ head: { ref: "renovate/minor", sha: "abc", repo: { full_name: "HeroicLands/x" } } })), false);
-        assert.equal(isPatchGroup(pr({ head: { ref: "renovate/major-foo-2.x", sha: "abc", repo: { full_name: "HeroicLands/x" } } })), false);
-        assert.equal(isPatchGroup(pr({ head: { ref: "renovate/lock-file-maintenance", sha: "abc", repo: { full_name: "HeroicLands/x" } } })), false);
-        assert.equal(isPatchGroup(pr({ user: { login: "heroiclands-bot" } })), false);
-        assert.equal(isPatchGroup(pr({ title: "WIP: chore(deps): update patch dependencies" })), false);
-        assert.equal(isPatchGroup(pr({ state: "closed" })), false);
-        assert.equal(isPatchGroup(pr({ head: { ref: "renovate/patch", sha: "abc", repo: { full_name: "someone/x" } } })), false);
+describe("approving patch and lockfile pull requests", () => {
+    test("only the open patch group and lockfile refresh from the dependency user qualify", () => {
+        assert.equal(isAutoApproved(pr()), true);
+        assert.equal(isAutoApproved(pr({ head: { ref: "renovate/minor", sha: "abc", repo: { full_name: "HeroicLands/x" } } })), false);
+        assert.equal(isAutoApproved(pr({ head: { ref: "renovate/major-foo-2.x", sha: "abc", repo: { full_name: "HeroicLands/x" } } })), false);
+        assert.equal(isAutoApproved(pr({ head: { ref: "renovate/lock-file-maintenance", sha: "abc", repo: { full_name: "HeroicLands/x" } } })), true);
+        assert.equal(isAutoApproved(pr({ user: { login: "heroiclands-bot" } })), false);
+        assert.equal(isAutoApproved(pr({ title: "WIP: chore(deps): update patch dependencies" })), false);
+        assert.equal(isAutoApproved(pr({ state: "closed" })), false);
+        assert.equal(isAutoApproved(pr({ head: { ref: "renovate/patch", sha: "abc", repo: { full_name: "someone/x" } } })), false);
     });
 
     test("an approval counts only from the bot, on the current head, and undismissed", () => {
