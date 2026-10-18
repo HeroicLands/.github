@@ -18,7 +18,7 @@
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": ["before 6am on sunday"],
-    "automerge": false,
+    "automerge": true,
     "commitMessageAction": "refresh",
     "commitMessageTopic": "lockfile"
   },

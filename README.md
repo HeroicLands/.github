@@ -868,7 +868,7 @@ wants its own rules may add a `renovate.json` extending
 | --- | --- | --- |
 | All patch updates | `renovate/patch` | Automatically, once checks pass |
 | All minor updates, pins and digests | `renovate/minor` | By the owner |
-| Lockfile maintenance | `renovate/lock-file-maintenance` | By the owner |
+| Lockfile maintenance | `renovate/lock-file-maintenance` | Automatically, once checks pass |
 | Each major update | `renovate/<package>-<major>.x` | By the owner |
 
 Commit subjects read `chore(deps): update patch dependencies`. Declared ranges
@@ -876,17 +876,19 @@ are kept: a version inside the range changes the lockfile only, and
 `peerDependencies` widen. Pull requests carry no labels, and at most four are
 open per repository.
 
-### How a patch pull request merges
+### How a patch or lockfile pull request merges
 
-Renovate asks Gitea to squash-merge the patch pull request when its checks
+Renovate asks Gitea to squash-merge the patch and lockfile pull requests when their checks
 succeed. `main` still needs one approving review and Gitea cannot exempt a
-user, so the last step of the run approves it as `heroiclands-bot`
-(`RELEASE_BOT_TOKEN`) with `renovate/approve-patch-prs.mjs`. That script lists
+user, so the last step of the run approves them as `heroiclands-bot`
+(`RELEASE_BOT_TOKEN`) with `renovate/approve-dependency-prs.mjs`. That script lists
 the open pull requests of every organisation repository and approves only an
-open, non-draft pull request from `renovate` on the branch `renovate/patch`,
+open, non-draft pull request from `renovate` on the branch `renovate/patch` or
+`renovate/lock-file-maintenance`,
 unless the bot's approval already stands on its current head commit. A new push
-dismisses the approval, and the next run approves again. Minor, major and
-lockfile pull requests are never approved by it.
+dismisses the approval, and the next run approves again. Minor and major pull
+requests are never approved by it. Both kinds it approves move dependencies only
+within their declared ranges, and CI gates the merge.
 
 ### Running it by hand
 

@@ -2,8 +2,8 @@
 #
 # Renovate runs as the `renovate` user (org secret RENOVATE_TOKEN) with the
 # configuration in renovate/config.cjs, which merges the shared preset
-# default.json. Afterwards heroiclands-bot approves the patch-group pull
-# requests so their scheduled merges can land. Gitea evaluates cron in UTC, so
+# default.json. Afterwards heroiclands-bot approves the patch-group and
+# lockfile-maintenance pull requests so their scheduled merges can land. Gitea evaluates cron in UTC, so
 # the schedule fires at both 09:00 and 10:00 on Sunday and the first step
 # keeps the one that is 02:00 in Los Angeles.
 #
@@ -88,8 +88,8 @@ jobs:
           fi
           npx --yes "renovate@$RENOVATE_VERSION"
 
-      - name: Approve the patch pull requests
+      - name: Approve the patch and lockfile pull requests
         if: ${{ !cancelled() && steps.slot.outputs.run == 'true' && (github.event_name == 'schedule' || inputs.dry-run == 'none') }}
         env:
           RELEASE_BOT_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
-        run: node renovate/approve-patch-prs.mjs
+        run: node renovate/approve-dependency-prs.mjs

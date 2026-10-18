@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Approve Renovate's patch-group pull requests as heroiclands-bot.
+// Approve Renovate's patch-group and lockfile-maintenance pull requests as
+// heroiclands-bot.
 //
 // `main` requires one approving review and Gitea cannot exempt a user, so the
-// review comes from the release bot. Only the patch group qualifies: its head
-// branch is `renovate/patch`, opened by the `renovate` user from the
-// repository itself. A new push dismisses an approval, so a review counts only
+// review comes from the release bot. Only the two qualify: the head branch is
+// `renovate/patch` or `renovate/lock-file-maintenance`, opened by the
+// `renovate` user from the repository itself. Both move dependencies only
+// within their declared ranges. A new push dismisses an approval, so a review counts only
 // when it names the pull request's current head commit.
 //
 // Environment: FORGE_API (default https://git.pupluppy.org/api/v1),
@@ -13,16 +15,16 @@
 
 import { pathToFileURL } from "node:url";
 
-export const PATCH_BRANCH = "renovate/patch";
+export const APPROVED_BRANCHES = ["renovate/patch", "renovate/lock-file-maintenance"];
 export const DEPENDENCY_USER = "renovate";
 export const APPROVER = "heroiclands-bot";
 
-/** Whether a pull request is the open, non-draft patch group Renovate opened. */
-export function isPatchGroup(pr) {
+/** Whether a pull request is an open, non-draft patch group or lockfile refresh Renovate opened. */
+export function isAutoApproved(pr) {
     return (
         pr.state === "open" &&
         pr.user?.login === DEPENDENCY_USER &&
-        pr.head?.ref === PATCH_BRANCH &&
+        APPROVED_BRANCHES.includes(pr.head?.ref) &&
         pr.head?.repo?.full_name === pr.base?.repo?.full_name &&
         !/^(WIP:|\[WIP\])/i.test(pr.title ?? "")
     );
@@ -42,7 +44,7 @@ export function isApprovedAtHead(pr, reviews) {
 
 /** The pull requests that need an approval, given each one's reviews. */
 export function needingApproval(entries) {
-    return entries.filter(({ pr, reviews }) => isPatchGroup(pr) && !isApprovedAtHead(pr, reviews)).map(({ pr }) => pr);
+    return entries.filter(({ pr, reviews }) => isAutoApproved(pr) && !isApprovedAtHead(pr, reviews)).map(({ pr }) => pr);
 }
 
 async function main() {
@@ -76,7 +78,7 @@ async function main() {
     for (const repo of repos) {
         if (repo.archived) continue;
         const pulls = await pages(`/repos/${repo.full_name}/pulls?state=open`);
-        for (const pr of pulls.filter(isPatchGroup)) {
+        for (const pr of pulls.filter(isAutoApproved)) {
             try {
                 const reviews = await pages(`/repos/${repo.full_name}/pulls/${pr.number}/reviews`);
                 if (isApprovedAtHead(pr, reviews)) {
@@ -88,7 +90,7 @@ async function main() {
                     body: JSON.stringify({
                         event: "APPROVED",
                         commit_id: pr.head.sha,
-                        body: "Patch-only dependency update; the scheduled merge waits for checks.",
+                        body: "Dependency update within declared ranges; the scheduled merge waits for checks.",
                     }),
                 });
                 console.log(`${repo.full_name}#${pr.number}: approved ${pr.head.sha.slice(0, 10)}`);
