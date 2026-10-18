@@ -2,7 +2,7 @@
 
 /**
  * Runs the "Verify the tree is a complete site" step of the reusable
- * deploy workflow, on both forges, against fake site trees. The step's `run:`
+ * deploy workflow, against fake site trees. The step's `run:`
  * body is extracted from the workflow and executed in a scratch directory that
  * holds only the fixture, so what passes or fails is the shipped script.
  *
@@ -35,7 +35,7 @@ function guardRun(forge) {
  * Builds a fixture and runs the guard against it.
  *
  * @param {object} o
- * @param {string} o.forge          ".github" or ".gitea"
+ * @param {string} o.forge          ".gitea"
  * @param {Record<string,string>} o.files  files under the site directory, `pkg/` prefixed
  * @param {string} [o.installed]    version of the installed package-build, if any
  * @param {string} [o.ownVersion]   version in the repository's own package.json
@@ -74,7 +74,7 @@ function runGuard({ forge, files, installed, ownVersion, repository = "HeroicLan
 
 const base = { "pkg/404.html": page("not found") };
 
-for (const forge of [".github", ".gitea"]) {
+for (const forge of [".gitea"]) {
     test(`${forge}: a package-build 22.4+ homepage build whose root has an empty <main> is refused`, () => {
         const r = runGuard({ forge, installed: "23.1.1", files: { ...base, "pkg/index.html": EMPTY_ROOT } });
         assert.notEqual(r.status, 0, r.out);

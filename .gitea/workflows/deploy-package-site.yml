@@ -147,12 +147,9 @@
 # On Gitea
 # ---------------------------------------------------------------------------
 #
-# This is the copy Gitea runs, called as
-# `HeroicLands/.github/.gitea/workflows/deploy-package-site.yml@main`. The
-# GitHub-flavoured copy in `.github/workflows/` runs on GitHub. They differ only
-# in the job gate, the build step's environment, and one added step that checks
-# the runner's tools; `ci/workflow-parity.test.mjs` fails when the build
-# contract, the `_headers` default or the completeness guard differ.
+# Called as `HeroicLands/.github/.gitea/workflows/deploy-package-site.yml@main`.
+# `ci/workflows.test.mjs` holds the build contract, the `_headers` default and
+# the completeness guard.
 #
 # The job runs only when the CALLER's repository variable `HL_DEPLOY_ENABLED` is
 # `true` (a called workflow reads the caller's variables), and only off GitHub.
@@ -273,8 +270,7 @@ on:
 jobs:
     deploy:
         # Runs on Gitea only, and only for a repository that has switched
-        # deploying on. The GitHub-side workflow under .github/workflows is the
-        # deploy path on GitHub.
+        # deploying on.
         if: ${{ github.server_url != 'https://github.com' && vars.HL_DEPLOY_ENABLED == 'true' }}
         runs-on: ubuntu-latest
 

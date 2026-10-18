@@ -5,12 +5,11 @@ name: Version and Tag
 #
 # THIS WORKFLOW NEVER PUBLISHES. npm trusted publishing needs an OIDC identity
 # Gitea cannot mint, and the trusted publisher on npm is bound to the package's
-# GitHub repository and its `.github/workflows/release.yml`. That workflow, in
-# each package repository, runs on GitHub when the push mirror delivers the tag
-# made here: it checks the tag, publishes with provenance and creates the
-# GitHub Release. This file therefore has no GitHub counterpart in
-# `.github/workflows/`, holds no npm or GitHub credential, and
-# `ci/workflow-parity.test.mjs` fails if it gains one.
+# GitHub repository and its `.github/workflows/release.yml`, the only workflow
+# GitHub runs. That workflow, in each package repository, runs when the push
+# mirror delivers the tag made here: it publishes with provenance and creates
+# the GitHub Release. This file holds no npm or GitHub credential, and
+# `ci/workflows.test.mjs` fails if it gains one.
 #
 #   1. A pull request declares its bump as a `.changeset/*.md` file.
 #   2. Merging it to `main` runs this workflow, which opens or updates the
@@ -26,7 +25,7 @@ name: Version and Tag
 # `actions/version-pr` declares `has-changesets` and `pr-number`;
 # `actions/release-tag` declares `version`, `tag`, `commit` and `pushed`. An
 # output name that does not exist reads as the empty string with no error, so
-# `ci/workflow-parity.test.mjs` checks every reference below against the
+# `ci/workflows.test.mjs` checks every reference below against the
 # action's `action.yml`. Kebab-case names need bracket notation, because a
 # hyphen inside a property name is parsed as subtraction.
 

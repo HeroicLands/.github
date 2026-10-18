@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "private": true,
     "type": "module",
-    "description": "Dependency manifest for the workflow parity test. Not published.",
+    "description": "Dependency manifest for the workflow tests. Not published.",
     "dependencies": {
         "yaml": "^2.8.1"
     }

@@ -1,14 +1,13 @@
 name: Workflow parity
 
-# The reusable workflows exist once for each forge; this fails when what must
-# not differ between them does. The shared actions' own tests run here too,
-# because the workflows' release and tag steps are those actions.
+# Holds what the reusable workflows promise their callers, and runs the shared
+# actions' own tests, because the workflows' release and tag steps are those
+# actions.
 
 on:
   pull_request:
     types: [opened, reopened, synchronize]
     paths:
-      - ".github/workflows/**"
       - ".gitea/workflows/**"
       - "ci/**"
       - "githooks/**"

@@ -3,14 +3,11 @@ name: Version and Release
 # Version a Foundry package with changesets and cut the GitHub Release that
 # Foundry installs from.
 #
-# THIS IS THE GITEA COPY, called as
-# `HeroicLands/.github/.gitea/workflows/release-foundry-package.yml@main`. The
-# GitHub-flavoured copy in `.github/workflows/` runs on GitHub;
-# `ci/workflow-parity.test.mjs` fails when the build and pack scripts, the
-# already-released guard, the version and tag computation, or the asset list
-# differ between them.
+# Called as `HeroicLands/.github/.gitea/workflows/release-foundry-package.yml@main`.
+# `ci/workflows.test.mjs` holds the build and pack scripts, the already-released
+# guard, the version and tag computation and the asset list.
 #
-# The differences, and only these:
+# What the workflow does:
 #
 #   * The job runs only when the CALLER's repository variable
 #     `HL_RELEASE_ENABLED` is `true` (a called workflow reads the caller's
@@ -183,8 +180,7 @@ jobs:
     #            the Release. It runs when `book` succeeded or was skipped.
     decide:
         # Runs on Gitea only, and only for a repository that has switched
-        # releasing on. The GitHub-side workflow under .github/workflows is the
-        # release path on GitHub.
+        # releasing on.
         if: ${{ github.server_url != 'https://github.com' && vars.HL_RELEASE_ENABLED == 'true' }}
         runs-on: ubuntu-latest
 

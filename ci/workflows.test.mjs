@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 /**
- * The reusable workflows exist twice: `.github/workflows/` is what GitHub runs
- * and `.gitea/workflows/` is what Gitea runs. They share a build contract, a
- * completeness guard, an already-released guard and an asset list, and those
- * must not drift between the forges. Every step that carries a `run:` body is
- * compared; the steps allowed to differ are named below, so a renamed, added or
- * removed step fails here rather than going unnoticed.
+ * The reusable workflows in `.gitea/workflows/` are the only copies: every check
+ * runs on Gitea, and the one GitHub workflow a package carries is its own
+ * `release.yml`. These tests hold what each reusable workflow promises its
+ * callers: the build contract, a completeness guard, an already-released guard,
+ * an asset list, its secrets and its gate. Every step that carries a `run:` body
+ * is read from the Gitea file, so a renamed, added or removed step fails here
+ * rather than going unnoticed.
  *
  * Needs `yaml`: `npm ci --prefix ci`.
  */
@@ -20,41 +21,16 @@ const root = new URL("../", import.meta.url);
 const text = (forge, file) => readFileSync(new URL(`${forge}/workflows/${file}`, root), "utf8");
 const load = (forge, file) => parse(text(forge, file));
 
-/**
- * Gitea runner labels that stand for GitHub's hosted `ubuntu-latest`. GitHub
- * has no `light`, `lint` or `e2e` runners, so the GitHub copy of a job keeps
- * `ubuntu-latest` while the Gitea copy routes it to a lighter host.
- */
-const GITEA_LABELS_FOR_GITHUB = {
-    light: "ubuntu-latest",
-    lint: "ubuntu-latest",
-    e2e: "ubuntu-latest",
-    book: "ubuntu-latest",
-};
+/** Labels a Gitea job may ask for: those the build host and its runners serve. */
+const GITEA_LABELS = new Set(["ubuntu-latest", "ubuntu-vm", "x86", "linux", "light", "lint", "e2e", "book"]);
 
-/** Labels a Gitea job may ask for: the mapped ones and those the build host serves. */
-const GITEA_LABELS = new Set(["ubuntu-latest", "ubuntu-vm", "x86", "linux", ...Object.keys(GITEA_LABELS_FOR_GITHUB)]);
-
-/** A Gitea `runs-on` as GitHub would spell it. A label in neither set throws. */
-function githubLabel(label) {
-    // A label the caller chooses through an input is not a name to map.
-    if (/^\$\{\{\s*inputs\.[A-Za-z0-9_-]+(\s*\|\|\s*'[a-z-]+')?\s*\}\}$/.test(label)) return label;
-    assert.ok(GITEA_LABELS.has(label), `runs-on: ${label} is not a runner label with a declared mapping`);
-    return GITEA_LABELS_FOR_GITHUB[label] ?? label;
+/** Fails when a `runs-on` is neither a declared label nor an input the caller chooses. */
+function assertLabel(label) {
+    // A label the caller chooses through an input is not a name to check.
+    if (/^\$\{\{\s*inputs\.[A-Za-z0-9_-]+(\s*\|\|\s*'[a-z-]+')?\s*\}\}$/.test(label)) return;
+    assert.ok(GITEA_LABELS.has(label), `runs-on: ${label} is not a declared runner label`);
 }
 
-/** A Gitea workflow with every job's `runs-on` mapped to the GitHub label. */
-function asGithub(workflow) {
-    const jobs = Object.fromEntries(
-        Object.entries(workflow.jobs ?? {}).map(([name, job]) => [
-            name,
-            "runs-on" in job ? { ...job, "runs-on": githubLabel(job["runs-on"]) } : job,
-        ]),
-    );
-    return { ...workflow, jobs };
-}
-
-const GITHUB = ".github";
 const GITEA = ".gitea";
 const HOST = "'https://github.com'";
 
@@ -83,113 +59,23 @@ const withoutResume = (run) => run.replace(/^[ \t]*# RESUME-BEGIN\n[\s\S]*?^[ \t
 
 const reusable = {
     "release-foundry-package.yml": {
-        job: "release",
-        // The Gitea copy splits the work into these jobs; the steps of
-        // `giteaJobs` together are the steps of the GitHub `release` job, and
-        // `book` is Gitea-only.
+        // The jobs the workflow splits into; the gate sits on the first, and
+        // `book` is a separate job that depends on nothing here.
         giteaJobs: ["decide", "release"],
         giteaExtraJobs: ["book"],
         giteaGate: `github.server_url != ${HOST} && vars.HL_RELEASE_ENABLED == 'true'`,
-        // Steps present only in the GitHub copy, with the reason they exist there.
-        githubOnly: ["Mint the release app token"],
-        // Steps present only in the Gitea copy.
-        giteaOnly: [
-            "Tag the release",
-            "Find the declared books",
-            "Checkout the release commit",
-            "Setup Node for the release",
-            "Install the release dependencies",
-            "Take the release decision",
-            "Fetch the books",
-        ],
-        // Shared steps whose Gitea body adds the book hand-over.
-        differs: ["Package the release"],
-        // Steps whose body is not a `run:` and is therefore not compared byte for byte.
-        replaced: {
-            "Create or update the Version Packages PR": "uses",
-            "Create GitHub Release": "uses",
-            "Checkout code": "uses",
-        },
         secrets: ["RELEASE_BOT_TOKEN", "GH_RELEASE_TOKEN"],
     },
     "deploy-package-site.yml": {
-        job: "deploy",
         giteaJobs: ["deploy"],
         giteaExtraJobs: [],
         giteaGate: `github.server_url != ${HOST} && vars.HL_DEPLOY_ENABLED == 'true'`,
-        githubOnly: [],
-        giteaOnly: ["Check the runner has the tools the deploy uses"],
-        replaced: {},
         secrets: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
     },
 };
 
 for (const [file, spec] of Object.entries(reusable)) {
-    const github = load(GITHUB, file);
     const gitea = load(GITEA, file);
-    spec.differs ??= [];
-
-    test(`${file}: the step lists differ only where declared`, () => {
-        const githubNames = [...stepsByName(github, spec.job).keys()];
-        const giteaNames = [...stepsByName(gitea, spec.giteaJobs).keys()];
-        assert.deepEqual(
-            githubNames.filter((name) => !giteaNames.includes(name)).sort(),
-            [...spec.githubOnly, ...Object.keys(spec.replaced).filter((n) => !giteaNames.includes(n))].sort(),
-            "steps the Gitea copy lost",
-        );
-        assert.deepEqual(
-            giteaNames.filter((name) => !githubNames.includes(name)).sort(),
-            [...spec.giteaOnly].sort(),
-            "steps only the Gitea copy has",
-        );
-        const shared = githubNames.filter((name) => giteaNames.includes(name));
-        assert.deepEqual(
-            shared,
-            giteaNames.filter((name) => githubNames.includes(name)),
-            "shared steps run in a different order",
-        );
-    });
-
-    test(`${file}: every shared step has the same run body and condition`, () => {
-        const a = stepsByName(github, spec.job);
-        const b = stepsByName(gitea, spec.giteaJobs);
-        let compared = 0;
-        for (const [name, step] of a) {
-            if (!b.has(name)) continue;
-            const other = b.get(name);
-            assert.equal(expression(other.if), expression(step.if), `"${name}": the condition differs`);
-            assert.equal(other.id, step.id, `"${name}": the step id differs`);
-            if (spec.differs.includes(name)) continue;
-            if (name in spec.replaced) {
-                assert.ok(step[spec.replaced[name]], `"${name}" is not a ${spec.replaced[name]} step on GitHub`);
-                continue;
-            }
-            if (step.run === undefined) {
-                assert.deepEqual(other, step, `"${name}": an action step differs between the forges`);
-                compared += 1;
-                continue;
-            }
-            const giteaRun = name === "Decide whether to release" ? withoutResume(other.run) : other.run;
-            assert.equal(giteaRun, step.run, `"${name}": the run body differs between the forges`);
-            compared += 1;
-        }
-        assert.ok(compared > 0, "no step was compared");
-    });
-
-    test(`${file}: the interface matches on both forges`, () => {
-        const ia = github.on.workflow_call.inputs;
-        const ib = gitea.on.workflow_call.inputs;
-        assert.deepEqual(ib, ia, "the inputs differ");
-        // The workflow's outputs read the job that always runs: `decide` on
-        // Gitea, where `release` is skipped when there is nothing to release.
-        const giteaOutputs = JSON.parse(
-            JSON.stringify(gitea.on.workflow_call.outputs ?? {}).replaceAll("jobs.decide.outputs", "jobs.release.outputs"),
-        );
-        assert.deepEqual(giteaOutputs, github.on.workflow_call.outputs ?? {}, "the outputs differ");
-        assert.equal(gitea.jobs[spec.job]["runs-on"], github.jobs[spec.job]["runs-on"]);
-        assert.deepEqual(gitea.jobs[spec.job].concurrency, github.jobs[spec.job].concurrency);
-        assert.deepEqual(gitea.jobs[spec.job].outputs ?? {}, github.jobs[spec.job].outputs ?? {});
-    });
 
     test(`${file}: the secrets the Gitea copy declares are exactly the ones it is passed`, () => {
         const declared = Object.keys(gitea.on.workflow_call.secrets ?? {}).sort();
@@ -198,18 +84,12 @@ for (const [file, spec] of Object.entries(reusable)) {
         for (const name of used) assert.ok(declared.includes(name), `secrets.${name} is used but not declared`);
     });
 
-    test(`${file}: every Gitea job carries its enabling gate and every GitHub job its github.com guard`, () => {
+    test(`${file}: every job carries its enabling gate or depends on the one that does`, () => {
         assert.deepEqual(
-            Object.keys(gitea.jobs).filter((name) => !spec.giteaExtraJobs.includes(name) && !spec.giteaJobs.includes(name)),
-            [],
-            "the Gitea copy has a job nothing declares",
+            Object.keys(gitea.jobs).filter((name) => !spec.giteaExtraJobs.includes(name)),
+            spec.giteaJobs,
+            "the workflow's jobs differ from the declared split",
         );
-        assert.deepEqual(
-            Object.keys(gitea.jobs).filter((name) => !spec.giteaExtraJobs.includes(name)).filter((name) => name !== spec.job),
-            spec.giteaJobs.filter((name) => name !== spec.job),
-            "the Gitea copy's jobs differ from the declared split",
-        );
-        assert.ok(spec.job in gitea.jobs);
         // The gate sits on the first job. A later job of the split depends on
         // it and carries no gate of its own, so it never runs without it.
         for (const [name, job] of Object.entries(gitea.jobs)) {
@@ -224,7 +104,7 @@ for (const [file, spec] of Object.entries(reusable)) {
         }
     });
 
-    test(`${file}: the Gitea copy builds no link from the server URL and holds no GitHub-only machinery`, () => {
+    test(`${file}: the workflow builds no link from the server URL and holds no GitHub-only machinery`, () => {
         const source = text(GITEA, file);
         const code = source
             .split("\n")
@@ -236,7 +116,7 @@ for (const [file, spec] of Object.entries(reusable)) {
             }
         }
         for (const banned of ["RELEASE_APP", "changesets/action", "softprops", "create-github-app-token", "secrets: inherit"]) {
-            assert.ok(!code.includes(banned), `${file} for Gitea mentions ${banned}`);
+            assert.ok(!code.includes(banned), `${file} mentions ${banned}`);
         }
         for (const [, ref] of code.matchAll(/^\s*(?:-\s*)?uses:\s*(\S+)/gm)) {
             assert.ok(!/^https?:/.test(ref), `uses: ${ref} names a host; use the bare owner/repo form`);
@@ -247,34 +127,19 @@ for (const [file, spec] of Object.entries(reusable)) {
     });
 }
 
-test("release: the script names, the asset guard and the release asset list are the same on both forges", () => {
+test("release: the script names, the asset guard and the release asset list", () => {
     const file = "release-foundry-package.yml";
-    const a = stepsByName(load(GITHUB, file), "release");
     const b = stepsByName(load(GITEA, file), ["decide", "release"]);
 
-    for (const [name, script] of [
-        ["Build the package", "npm run ${{ inputs.build-script }}"],
-        ["Package the release", "npm run build:pack-release"],
-    ]) {
-        assert.equal(a.get(name).run, script, `GitHub "${name}"`);
-        if (name === "Package the release") continue;
-        assert.equal(b.get(name).run, script, `Gitea "${name}"`);
-    }
+    assert.equal(b.get("Build the package").run, "npm run ${{ inputs.build-script }}");
     // With the books built elsewhere the package script is told to leave them
     // out; without them it is the script as written.
     const packaging = b.get("Package the release");
     assert.match(packaging.run, /npm run build:pack-release -- --no-pdf/);
     assert.match(packaging.run, /^\s*npm run build:pack-release$/m);
 
-    for (const name of ["List the declared books", "Read changelog section for this version", "The assets exist"]) {
-        assert.equal(a.get(name).run, b.get(name).run, `"${name}" differs between the forges`);
-    }
-
-    const githubRelease = a.get("Create GitHub Release").with;
-    const giteaRelease = b.get("Create GitHub Release").with;
     const files = (value) => value.split("\n").map((line) => line.trim()).filter(Boolean);
-    assert.deepEqual(files(giteaRelease.files), files(githubRelease.files), "the asset list differs");
-    assert.deepEqual(files(githubRelease.files), [
+    assert.deepEqual(files(b.get("Create GitHub Release").with.files), [
         "build/dist/${{ inputs.package-kind }}.zip",
         "build/dist/${{ inputs.package-kind }}.json",
         "build/dist/*.jsonl",
@@ -282,63 +147,40 @@ test("release: the script names, the asset guard and the release asset list are 
         "build/dist/images.zip",
         "${{ steps.books.outputs.files }}",
     ]);
-    assert.equal(giteaRelease["body-path"], githubRelease.body_path);
-    assert.equal(giteaRelease.name, githubRelease.name);
-    assert.equal(giteaRelease.prerelease, githubRelease.prerelease);
-    assert.equal(giteaRelease["make-latest"], githubRelease.make_latest);
-    assert.equal(giteaRelease.tag, githubRelease.tag_name);
 });
 
-test("release: the Gitea checkout takes the bot token and the whole history", () => {
+test("release: the checkout takes the bot token and the whole history", () => {
     const checkout = stepsByName(load(GITEA, "release-foundry-package.yml"), "decide").get("Checkout code");
     assert.equal(checkout.with.token, "${{ secrets.RELEASE_BOT_TOKEN }}");
     assert.equal(checkout.with["fetch-depth"], 0);
 });
 
-test("release: the Gitea resume block is the only difference in the decision, and it is present", () => {
-    const file = "release-foundry-package.yml";
-    const github = stepsByName(load(GITHUB, file), "release").get("Decide whether to release").run;
-    const gitea = stepsByName(load(GITEA, file), "decide").get("Decide whether to release").run;
-    assert.notEqual(gitea, github, "the Gitea decision has no resume block");
-    assert.equal(withoutResume(gitea), github);
-    // The already-released guard and the tag computation are in the shared body.
-    assert.match(github, /TAG="v\$VERSION"/);
-    assert.match(github, /git ls-remote --exit-code --tags origin "refs\/tags\/\$TAG"/);
-    assert.match(github, /Tag \$TAG already exists — nothing to release\./);
+test("release: the decision carries the resume block, the already-released guard and the tag", () => {
+    const run = stepsByName(load(GITEA, "release-foundry-package.yml"), "decide").get("Decide whether to release").run;
+    assert.match(run, /# RESUME-BEGIN/);
+    assert.notEqual(withoutResume(run), run, "the decision has no resume block");
+    assert.match(run, /TAG="v\$VERSION"/);
+    assert.match(run, /git ls-remote --exit-code --tags origin "refs\/tags\/\$TAG"/);
+    assert.match(run, /Tag \$TAG already exists — nothing to release\./);
 });
 
 test("deploy: the completeness guard names the bounds and refuses on both sides of them", () => {
-    const file = "deploy-package-site.yml";
-    for (const forge of [GITHUB, GITEA]) {
-        const steps = stepsByName(load(forge, file), "deploy");
-        const guard = steps.get("Verify the tree is a complete site");
-        assert.equal(guard.env.MIN, "${{ steps.pkg.outputs.min }}", forge);
-        assert.equal(guard.env.MAX, "${{ steps.pkg.outputs.max }}", forge);
-        assert.match(guard.run, /"\$pages" -lt "\$MIN"/, forge);
-        assert.match(guard.run, /"\$MAX" -gt 0 \] && \[ "\$pages" -gt "\$MAX"/, forge);
-        const bounds = steps.get("Read the package and the bounds it declares");
-        assert.equal(bounds.env.MIN_IN, "${{ inputs.min-pages }}", forge);
-        assert.equal(bounds.env.MAX_IN, "${{ inputs.max-pages }}", forge);
-        assert.equal(steps.get("Build the site").run, 'npm run "$BUILD_SCRIPT"', forge);
-        assert.equal(steps.get("Build the site").env.BUILD_SCRIPT, "${{ inputs.build-script }}", forge);
-    }
+    const steps = stepsByName(load(GITEA, "deploy-package-site.yml"), "deploy");
+    const guard = steps.get("Verify the tree is a complete site");
+    assert.equal(guard.env.MIN, "${{ steps.pkg.outputs.min }}");
+    assert.equal(guard.env.MAX, "${{ steps.pkg.outputs.max }}");
+    assert.match(guard.run, /"\$pages" -lt "\$MIN"/);
+    assert.match(guard.run, /"\$MAX" -gt 0 \] && \[ "\$pages" -gt "\$MAX"/);
+    const bounds = steps.get("Read the package and the bounds it declares");
+    assert.equal(bounds.env.MIN_IN, "${{ inputs.min-pages }}");
+    assert.equal(bounds.env.MAX_IN, "${{ inputs.max-pages }}");
+    assert.equal(steps.get("Build the site").run, 'npm run "$BUILD_SCRIPT"');
+    assert.equal(steps.get("Build the site").env.BUILD_SCRIPT, "${{ inputs.build-script }}");
 });
 
-test("deploy: the Gitea build step is given no forge token", () => {
+test("deploy: the build step is given no forge token", () => {
     const build = stepsByName(load(GITEA, "deploy-package-site.yml"), "deploy").get("Build the site");
     assert.deepEqual(Object.keys(build.env), ["BUILD_SCRIPT"]);
-});
-
-test("deploy: the upload step is the same on both forges", () => {
-    const upload = (forge) =>
-        stepsByName(load(forge, "deploy-package-site.yml"), "deploy").get("Deploy to Cloudflare Pages (production)");
-    assert.deepEqual(upload(GITEA), upload(GITHUB));
-});
-
-test("the pull-request workflows are the same file on both forges", () => {
-    for (const file of ["changesets.yml", "no-attribution.yml"]) {
-        assert.deepEqual(asGithub(load(GITEA, file)), load(GITHUB, file), file);
-    }
 });
 
 test("every runs-on in a Gitea workflow is a declared label", () => {
@@ -346,43 +188,17 @@ test("every runs-on in a Gitea workflow is a declared label", () => {
     for (const file of readdirSync(new URL(`${GITEA}/workflows/`, root))) {
         for (const job of Object.values(load(GITEA, file).jobs ?? {})) {
             if (!("runs-on" in job)) continue;
-            githubLabel(job["runs-on"]);
+            assertLabel(job["runs-on"]);
             checked += 1;
         }
     }
     assert.ok(checked > 0, "no runs-on was checked");
 });
 
-test("a Gitea runs-on without a declared mapping is refused", () => {
-    assert.throws(() => githubLabel("gpu"), /not a runner label/);
-    assert.equal(githubLabel("light"), "ubuntu-latest");
-    assert.equal(githubLabel("lint"), "ubuntu-latest");
-    assert.equal(githubLabel("ubuntu-vm"), "ubuntu-vm");
-});
-
-/**
- * Gitea workflows with no GitHub copy: the parity check itself; the npm
- * release, whose GitHub half is each package's own `release.yml` because npm's
- * trusted publisher is bound to that file; and the full e2e run, which needs
- * the `e2e` runner and the Foundry stage it hosts; and the Renovate run, which
- * needs Gitea's API and the `lint` runner; and the CDN publish, whose credentials
- * live on Gitea.
- */
-const GITEA_ONLY = [
-    "workflow-parity.yml",
-    "release-npm-package.yml",
-    "e2e-full.yml",
-    "renovate.yml",
-    "publish-package-cdn.yml",
-];
-
-test("every Gitea workflow file has a GitHub counterpart, apart from the Gitea-only ones", () => {
-    const names = (forge) => readdirSync(new URL(`${forge}/workflows/`, root)).sort();
-    assert.deepEqual(
-        names(GITEA).filter((name) => !GITEA_ONLY.includes(name)),
-        names(GITHUB),
-    );
-    for (const name of GITEA_ONLY) assert.ok(names(GITEA).includes(name), `${name} is missing`);
+test("a runs-on without a declared label is refused", () => {
+    assert.throws(() => assertLabel("gpu"), /not a declared runner label/);
+    assert.doesNotThrow(() => assertLabel("light"));
+    assert.doesNotThrow(() => assertLabel("ubuntu-vm"));
 });
 
 /** The outputs an `actions/<name>/action.yml` in this repository declares. */
