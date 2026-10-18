@@ -40,6 +40,13 @@ describe("the preset", () => {
         assert.equal(preset.platformAutomerge, true);
     });
 
+    test("HeroicLands/.github's references to its own actions are never pinned there", () => {
+        const self = preset.packageRules.find((r) => r.matchRepositories?.includes("HeroicLands/.github"));
+        assert.equal(self.enabled, false);
+        assert.deepEqual(self.matchManagers, ["github-actions"]);
+        assert.ok(self.matchPackageNames.includes("HeroicLands/.github/**"));
+    });
+
     test("the patch group's branch is the one the approval step looks for", () => {
         assert.ok(APPROVED_BRANCHES.includes(`renovate/${rule("patch").groupSlug}`));
         assert.ok(APPROVED_BRANCHES.includes("renovate/lock-file-maintenance"));

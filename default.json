@@ -61,6 +61,13 @@
       "automerge": true
     },
     {
+      "description": "Inside HeroicLands/.github a shared workflow names the shared actions at @main, so it runs the actions of its own revision; Renovate leaves those references alone there. Every other repository pins them like any action.",
+      "matchRepositories": ["HeroicLands/.github"],
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["HeroicLands/.github", "HeroicLands/.github/**"],
+      "enabled": false
+    },
+    {
       "description": "TypeScript stays below 7: the 7.x package is the native compiler and carries no JavaScript compiler API, which package-build's schema extraction and declaration check, and TypeDoc, call at runtime.",
       "matchPackageNames": ["typescript"],
       "allowedVersions": "<7"
