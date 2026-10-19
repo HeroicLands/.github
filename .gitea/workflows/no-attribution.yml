@@ -15,7 +15,7 @@ jobs:
     name: No AI attribution
     runs-on: light
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: ./actions/no-attribution
         with:
           token: ${{ github.token }}
@@ -24,7 +24,7 @@ jobs:
     name: Attribution action tests
     runs-on: light
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "24"
