@@ -61,6 +61,13 @@
       "automerge": true
     },
     {
+      "description": "This repository's own reusable workflows call its actions at main, so a fix reaches every caller at once, as its workflow-parity test requires. Renovate leaves those references alone here; other repositories still pin HeroicLands/.github by digest.",
+      "matchRepositories": ["HeroicLands/.github"],
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["HeroicLands/.github", "/^HeroicLands\\/\\.github\\//"],
+      "enabled": false
+    },
+    {
       "description": "TypeScript stays below 7: the 7.x package is the native compiler and carries no JavaScript compiler API, which package-build's schema extraction and declaration check, and TypeDoc, call at runtime.",
       "matchPackageNames": ["typescript"],
       "allowedVersions": "<7"
