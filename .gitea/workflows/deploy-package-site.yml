@@ -293,7 +293,7 @@ jobs:
             # another ref of its own repository (sohl documents its newest
             # release, not `main`). Nothing here knows which packages do.
             - name: Checkout
-              uses: actions/checkout@v7
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
               with:
                   # 0 rather than the default 1: it also brings the tags.
                   fetch-depth: 0
@@ -384,7 +384,7 @@ jobs:
                   } >> "$GITHUB_OUTPUT"
 
             - name: Setup Node.js
-              uses: actions/setup-node@v7
+              uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
               with:
                   node-version: ${{ inputs.node-version }}
                   cache: npm
@@ -394,7 +394,7 @@ jobs:
 
             - name: Setup Hugo
               if: ${{ inputs.hugo-version != '' }}
-              uses: peaceiris/actions-hugo@v3
+              uses: peaceiris/actions-hugo@2752ce1d29631191ea3f27c23495fa06139a5b78 # v3
               with:
                   hugo-version: ${{ inputs.hugo-version }}
                   extended: true
@@ -1166,7 +1166,7 @@ jobs:
             # package prefix, purge those URLs — not the zone.
             - name: Deploy to Cloudflare Pages (production)
               if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
-              uses: cloudflare/wrangler-action@v4
+              uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4
               with:
                   apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
                   accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

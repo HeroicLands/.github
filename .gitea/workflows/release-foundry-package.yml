@@ -230,7 +230,7 @@ jobs:
             # The bot's token is persisted by the checkout, so the version
             # branch and the tag are pushed as the bot and start workflows.
             - name: Checkout code
-              uses: actions/checkout@v7
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
               with:
                   token: ${{ secrets.RELEASE_BOT_TOKEN }}
                   # `changeset version` reads the history to build the
@@ -239,7 +239,7 @@ jobs:
                   fetch-depth: 0
 
             - name: Setup Node
-              uses: actions/setup-node@v7
+              uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
               with:
                   node-version: ${{ inputs.node-version }}
                   cache: npm
@@ -452,7 +452,7 @@ jobs:
 
             - name: Checkout the release commit
               if: ${{ needs.decide.outputs.release == 'true' && needs.decide.outputs.books == 'true' && inputs.book-runner != '' }}
-              uses: actions/checkout@v7
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
               with:
                   token: ${{ secrets.RELEASE_BOT_TOKEN }}
 
@@ -496,7 +496,7 @@ jobs:
 
             - name: Hand over the books
               if: ${{ needs.decide.outputs.release == 'true' && needs.decide.outputs.books == 'true' && inputs.book-runner != '' }}
-              uses: actions/upload-artifact@v7
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
               with:
                   name: release-books
                   path: build/dist/*.pdf
@@ -523,13 +523,13 @@ jobs:
             # The bot's token is persisted by the checkout, so the tag is pushed
             # as the bot and starts workflows.
             - name: Checkout the release commit
-              uses: actions/checkout@v7
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
               with:
                   token: ${{ secrets.RELEASE_BOT_TOKEN }}
                   fetch-depth: 0
 
             - name: Setup Node for the release
-              uses: actions/setup-node@v7
+              uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
               with:
                   node-version: ${{ inputs.node-version }}
                   cache: npm
@@ -581,7 +581,7 @@ jobs:
 
             - name: Fetch the books
               if: steps.decide.outputs.release == 'true' && needs.decide.outputs.books == 'true'
-              uses: actions/download-artifact@v8
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
               with:
                   name: release-books
                   path: build/dist
