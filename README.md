@@ -122,9 +122,8 @@ jobs:
 | `max-pages` | `0` | most it emits, `0` for no ceiling; rejected in `homepage` mode |
 | `build-script` | `build:site` | the npm script that builds the site |
 | `site-dir` | `build/site` | the directory uploaded — the deployment root |
-| `config` | `package-build.config.yaml` | read for `contentPackage` and `publish.site` |
+| `config` | `package-build.config.yaml` | read for `contentPackage` |
 | `node-version` | `24` | |
-| `hugo-version` | `0.163.3` | shared across packages; `""` skips installing Hugo |
 | `domain-suffix` | `pkg.heroiclands.org` | the namespace the router derives an origin in |
 | `allow-unpublished` | `false` | build and verify without credentials instead of failing |
 
@@ -135,21 +134,21 @@ below.
 
 The workflow runs `npm run build:site` and takes whatever tree it leaves
 behind. **It does not know the steps**, and this is the load-bearing decision:
-thalorna's script is `build:site-content && hugo && build:site-root`, sohl's is
+a content package's script is `package-build deps fetch && package-build site build`, sohl's is
 `docs:prepare && docs:html && build:kb && site:assemble`, and a package added a
 year from now will differ again. Teaching this workflow any of those shapes
 would mean editing *this* repository every time a package changed how it
 builds — the coupling the shared workflow exists to remove.
 
 What the workflow requires of the script is only its **output**: the site under
-`<site-dir>/<package>/`, i.e. Hugo's `publishDir` set to
+`<site-dir>/<package>/`, which is where `package-build site build` writes
 `build/site/<package>`, with `<site-dir>` uploaded whole. The deployed tree
 then carries its own prefix physically, so the router proxies `/<package>/…`
 straight through without rewriting the path and the deployment behaves
 identically at the project's own address
 ([heroiclands-site#25](https://github.com/HeroicLands/heroiclands-site/issues/25)).
-A build that publishes Hugo's default `public/` 404s at every address this
-deploy serves — and only once the route is live.
+A build that publishes anywhere else 404s at every address this deploy serves —
+and only once the route is live.
 
 The checkout is unshallow (`fetch-depth: 0`, so tags come with it). That is what lets a package's
 build resolve and check out **another ref of its own repository** — sohl
@@ -160,48 +159,32 @@ any package does so.
 
 A Cloudflare Pages deploy **replaces the whole tree**, so a build that silently
 emits nothing takes the live site down and reports success. Nothing is uploaded
-until the tree has been proven. Every mode is checked; the mode only changes the
-page count.
+until the tree has been proven. Every run checks the same files; the bounds a
+caller states only change the page count.
 
-| | `publish.site: content` | `publish.site: homepage` |
+| | caller states `min-pages` | caller states neither bound |
 | --- | --- | --- |
-| `<pkg>/index.html` | non-empty | non-empty |
+| `<pkg>/index.html` | non-empty, `<main>` not empty | non-empty, `<main>` not empty |
 | `<pkg>/404.html` | non-empty | non-empty |
 | `<site-dir>/_headers` | non-empty | non-empty |
-| `<pkg>/homepage-*/index.html` | non-empty, on package-build ≥ 15 | non-empty, on package-build ≥ 15 |
 | pages (`index.html` count) | `min-pages` ≤ n ≤ `max-pages` | **exactly 1** |
 | bounds settable by the caller | yes, and `min-pages` is required | **no** |
 
-**The landing is required, and which file that is depends on the toolchain.**
-Before package-build 15 the landing *was* `<pkg>/index.html`, so losing it
-emptied the package root and the root check caught the collapse. Since
-[package-build#182](https://github.com/HeroicLands/package-build/issues/182)
-the landing is an addressed note at `<pkg>/homepage-<shortcode>/` and Hugo
-writes the site root regardless — so a build that emitted **no landing at all**
-leaves one `index.html`, tallies one page, passes every other check, and
-replaces the live site with chrome around an empty `<main>`
+**The landing is `<pkg>/index.html`.** A build that emitted no homepage can still
+leave an `index.html` of chrome around an empty `<main>`, which is non-empty and
+tallies as a page. The guard refuses an empty `<main>` rather than replacing the
+live site with a blank page
 ([#21](https://github.com/HeroicLands/.github/issues/21)).
 
-The two shapes are identical on disk, so the guard asks the **installed**
-`@heroiclands/package-build` — a fact about the tree that was actually built,
-readable after `npm ci` — rather than the declared range, which is a claim:
-`>=9.0.0` permits 15 while the lockfile pins 9, and reading permission as
-resolution would refuse a legitimate old-shape build. From 15 on, no landing is
-a collapsed build and is refused; below 15 the root is the landing and is
-counted as it always was. A version that cannot be read is refused too — the
-question only arises once the landing is already missing. When every caller is
-on 15 the branch goes, along with the discount's condition.
-
-**Homepage-only is the stricter check, not the absent one.** It is two-sided: a
+**Stating no bound is the stricter check, not the absent one.** It is two-sided: a
 build that emitted nothing fails, and so does a build that emitted more than the
 homepage. `kethira` and `harnadventures` publish one page because publishing
 their content would breach the fan-content licences they ship under (Keléstia's
 Fan Material Guidelines; Lythia's terms), so "exactly one page" is a licensing
-boundary. The caller cannot widen it — passing `min-pages` or `max-pages` in
-homepage mode fails the run, because a boundary an input can widen is not a
-boundary.
+boundary. The only input that leaves it is stating a bound, which a package
+publishing its homepage alone has no reason to do.
 
-**`min-pages` is required in `content` mode.** A content package that states no
+**`min-pages` is required once a caller states any bound.** A content package that states no
 floor has no guard at all, and a guard that cannot fail is the failure mode this
 workflow exists to prevent. Set it below the real figure with room for growth —
 it catches a collapsed build, it is not an assertion about today's page count.
@@ -246,10 +229,10 @@ first two never reach it. The strip is asserted in the router's own suite, which
 gates every pull request there (heroiclands-site#30), and it was live end to end
 until heroiclands-site#26 moved the origin off `*.pages.dev`.
 
-**The mode is read from `package-build.config.yaml`, never passed in**, so the
-guard cannot be told one thing while the build does another. `publish.site` was
-a boolean before package-build 5.0; a boolean is refused here with the same
-message the toolchain gives, rather than mapped onto the nearest mode.
+**The bounds are the mode.** `package-build` decides what a package publishes
+from its authored content tree, so the configuration states no mode. A caller
+that states `min-pages` publishes content pages; one that states neither
+publishes its homepage alone.
 
 ### The hosting project and the custom domain
 
@@ -352,14 +335,14 @@ The floors are each package's own, taken from a real build with room to spare:
 green.
 
 Everything else — the package name, the publishing mode, the origin hostname,
-the guard, the runner, the Hugo version — is derived or shared. **Adding the
+the guard, the runner — is derived or shared. **Adding the
 seventh package is a `project:` name and, if it publishes content, a floor.**
 
 ### Adding a package
 
-1. Set `contentPackage` and `publish.site` in `package-build.config.yaml`.
+1. Set `contentPackage` in `package-build.config.yaml`.
 2. Give the repository a `build:site` script that writes
-   `build/site/<package>/` (Hugo `publishDir`) with a `404.html` in it.
+   `build/site/<package>/` (`package-build site build`) with a `404.html` in it.
    `build/site/_headers` is written for you unless the build produces one.
 3. Add the four secrets-and-`project` lines above, with a
    `CLOUDFLARE_API_TOKEN` carrying **both** permissions in the table above.
@@ -656,7 +639,7 @@ variable runs neither job. The secrets are organisation-level on Gitea and are
 passed by name; `secrets: inherit` is never used.
 
 Every job runs on `ubuntu-latest`, a host-mode runner that already carries Node,
-Hugo, `yq`, `jq` and `curl`, apart from the Foundry release's `book` job, which
+`yq`, `jq` and `curl`, apart from the Foundry release's `book` job, which
 runs on the runner its caller names. Nothing is installed into a system path.
 The Foundry release's gate sits on its `decide` job; `book` and `release`
 depend on it. The job token never starts other workflows, so every push and
@@ -972,7 +955,7 @@ point.
 It can be enabled from the API, one call per repository:
 
 ```bash
-for r in sohl-thalorna sohl-kethira-basic heroiclands-hugo-theme \
+for r in sohl-thalorna sohl-kethira-basic \
          harn-adventures harn-ensemble HarnMaster-3-FoundryVTT \
          heroiclands-site package-build .github; do
   gh api --method PUT "repos/HeroicLands/$r/private-vulnerability-reporting"

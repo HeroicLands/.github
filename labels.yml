@@ -90,7 +90,7 @@
 
 - name: area/site
   color: 24bdb0
-  description: "A website: Hugo build, layouts, rendered content, Cloudflare Pages deployment"
+  description: "A website: site build, layouts, rendered content, Cloudflare Pages deployment"
   exclusive: false
 
 - name: area/styling

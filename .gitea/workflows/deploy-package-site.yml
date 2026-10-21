@@ -20,20 +20,20 @@
 # ---------------------------------------------------------------------------
 #
 # The workflow invokes a NAMED NPM SCRIPT — `build:site` by default — and takes
-# whatever tree it leaves behind. It does not know the steps. thalorna's script
-# is `build:site-content && hugo && build:site-root`; sohl's is
+# whatever tree it leaves behind. It does not know the steps. A content package's
+# script is `package-build deps fetch` then `package-build site build`; sohl's is
 # `docs:prepare && docs:html && build:kb && site:assemble`. Teaching this
 # workflow either shape would mean editing this repository every time a package
 # changed how it builds, which is the coupling the whole issue exists to remove.
 #
-# The script must leave the site under `<site-dir>/<package>/` — i.e. Hugo's
-# `publishDir` is `build/site/<package>` — and `<site-dir>` is what gets
+# The script must leave the site under `<site-dir>/<package>/` — which is where
+# `package-build site build` writes it — and `<site-dir>` is what gets
 # uploaded. The deployed tree therefore carries its own prefix physically, which
 # is what lets the router proxy `/<package>/…` straight through without
 # rewriting the path, and lets the same deployment behave identically at the
-# project's own address (heroiclands-site#25). A build that publishes Hugo's
-# default `public/` 404s at every address this deploy serves, and only once the
-# route is live.
+# project's own address (heroiclands-site#25). A build that publishes anywhere
+# else 404s at every address this deploy serves, and only once the route is
+# live.
 #
 # The checkout is unshallow and carries tags, so a package's own build script
 # can resolve and check out another ref — sohl builds its API documentation from
@@ -76,46 +76,10 @@
 # states no bounds, and a run that found a second page fails rather than
 # deploying it.
 #
-# A PAGE IS PUBLISHED MATERIAL, NOT AN `index.html`, and WHERE THE LANDING
-# LIVES DEPENDS ON THE INSTALLED `@heroiclands/package-build`, which the guard
-# reads from the checkout rather than assuming:
-#
-#   < 15         the landing is `<dir>/index.html` itself — the site root and
-#                the authored homepage are one file — and it is counted as the
-#                page it is.
-#
-#   >= 15,       the landing is an addressed note at
-#   < 22.4.0     `<dir>/homepage-<shortcode>/index.html`, and Hugo generates a
-#                site root at `<dir>/index.html` beside it regardless — empty
-#                `<main>`, authored by nobody. That root is discounted from the
-#                tally, required only to be present and non-empty (its absence
-#                is the collapsed-build signature), and a build that emitted no
-#                addressed landing is refused rather than silently counted as
-#                complete. `<dir>/_redirects` sending `/<package>/` and
-#                `/<package>` to the landing is required too: the canonical
-#                address — the one every link points at and the one the site
-#                router proxies — is otherwise Hugo's empty root, so a build can
-#                publish a perfect landing nobody is routed to.
-#
-#   >= 22.4.0    the landing is `<dir>/index.html` again — an authored page, not
-#                Hugo's chrome — and is counted as the page it is. No
-#                `homepage-*/` directory is published; one present alongside a
-#                22.4.x build is a stale build that was not cleaned, and the
-#                guard refuses it rather than trusting whichever `index.html`
-#                looks right. No `_redirects` is required, because the
-#                canonical address already serves the landing directly; one a
-#                package writes anyway is not an error.
-#
-# WHICH SHAPE APPLIES IS NOT A PROPERTY OF THE TREE — an `<dir>/index.html`
-# with no `homepage-*/` beside it is either the < 15 shape or the >= 22.4.0
-# shape, and the two trees can be identical on disk. So the guard reads the
-# INSTALLED package-build from `node_modules` rather than guessing from what is
-# on disk, and refuses to guess when it cannot be read: a version this guard
-# cannot place is not license to deploy pending its answer.
-#
-# The mode is READ FROM `package-build.config.yaml`, never passed in, so it is
-# the same value the toolchain builds from and the two cannot come to disagree
-# about what a package publishes.
+# THE LANDING IS `<dir>/index.html`, an authored page, and every other page is an
+# `index.html` beneath it. The page count is the number of `index.html` files
+# under `<dir>`. A landing whose `<main>` is empty is a build that emitted no
+# homepage, and is refused rather than deployed as a blank page.
 #
 # ---------------------------------------------------------------------------
 # Secrets
@@ -154,7 +118,7 @@
 # The job runs only when the CALLER's repository variable `HL_DEPLOY_ENABLED` is
 # `true` (a called workflow reads the caller's variables), and only off GitHub.
 # The runner label `ubuntu-latest` is a host-mode runner that already carries
-# Node, Hugo, `yq`, `jq` and `curl`; nothing is installed into system paths.
+# Node, `yq`, `jq` and `curl`; nothing is installed into system paths.
 #
 # The job token is not passed to the build: on Gitea it is a Gitea token, and a
 # build that handed it to `gh` would send it to github.com.
@@ -175,10 +139,7 @@ on:
             min-pages:
                 description: >-
                     Fewest pages a complete build of this package emits, counted
-                    as `index.html` files under the package prefix — less the
-                    site root Hugo generates at `/<package>/` once a package's
-                    landing has an address of its own, which is nobody's page.
-                    Stating it is what declares that this package publishes
+                    as `index.html` files under the package prefix. Stating it is what declares that this package publishes
                     content pages; a caller that states neither bound is held
                     to exactly one page, its homepage. Set it below the real
                     figure with room for growth, not at it: it is a floor that
@@ -222,15 +183,6 @@ on:
                 description: Node.js version the build runs on.
                 required: false
                 default: "24"
-                type: string
-            hugo-version:
-                description: >-
-                    Hugo version to install, shared across every package so
-                    there is one bump rather than six. Override to trial a build
-                    ahead of the others; set to the empty string for a package
-                    whose build does not use Hugo.
-                required: false
-                default: "0.163.3"
                 type: string
             domain-suffix:
                 description: >-
@@ -392,13 +344,6 @@ jobs:
             - name: Install dependencies
               run: npm ci
 
-            - name: Setup Hugo
-              if: ${{ inputs.hugo-version != '' }}
-              uses: peaceiris/actions-hugo@2752ce1d29631191ea3f27c23495fa06139a5b78 # v3
-              with:
-                  hugo-version: ${{ inputs.hugo-version }}
-                  extended: true
-
             # One script, whatever it contains. No forge token is in its environment.
             - name: Build the site
               env:
@@ -546,36 +491,42 @@ jobs:
                   MODE: ${{ steps.pkg.outputs.mode }}
                   MIN: ${{ steps.pkg.outputs.min }}
                   MAX: ${{ steps.pkg.outputs.max }}
-                  REPOSITORY: ${{ github.repository }}
               run: |
                   set -euo pipefail
                   dir="${SITE}/${PKG}"
 
                   test -d "$dir" || {
                       echo "::error::${dir} does not exist. The build must publish into" \
-                           "\`<site-dir>/<package>/\` — Hugo's publishDir — so the deployed tree" \
-                           "carries its own prefix physically and the router can pass the path" \
-                           "through unchanged."
+                           "\`<site-dir>/<package>/\` so the deployed tree carries its own" \
+                           "prefix physically and the router can pass the path through unchanged."
                       exit 1
                   }
 
-                  # The deployment root answers. Its absence is the
-                  # collapsed-build signature.
-                  #
-                  # WHETHER THIS FILE IS THE LANDING DEPENDS ON THE INSTALLED
-                  # package-build, decided below once the version is read: below
-                  # 15 and from 22.4.0 on it is the authored homepage itself;
-                  # between the two it is Hugo's generated site root — chrome
-                  # around an empty `<main>` — shadowed in production by the
-                  # `/<package>/` redirect a package authors in `_redirects`.
-                  # Either way it must exist and must not be empty (a build that
-                  # emitted nothing has no root either), which is why this check
-                  # runs unconditionally; whether it also counts as a published
-                  # page is decided at the tally below.
+                  # The landing is the package's authored homepage. Its absence
+                  # is the collapsed-build signature.
                   test -s "${dir}/index.html" || {
                       echo "::error::${dir}/index.html is missing or empty."
                       exit 1
                   }
+
+                  # THE LANDING CARRIES CONTENT. A build that emitted no
+                  # homepage can still leave a non-empty `index.html` of chrome
+                  # around an empty `<main>`, which the size check above cannot
+                  # tell from a page. An empty `<main>` (nothing but whitespace
+                  # and comments) is that signature. A page with no `<main>`
+                  # element is not judged.
+                  if ! node -e '
+                      const html = require("fs").readFileSync(process.argv[1], "utf8");
+                      const main = /<main\b[^>]*>([\s\S]*?)<\/main>/i.exec(html);
+                      if (main && main[1].replace(/<!--[\s\S]*?-->/g, "").trim() === "") process.exit(3);
+                  ' "${dir}/index.html"; then
+                      echo "::error::${dir}/index.html has an empty <main>: it is chrome" \
+                           "around no content, not a landing page. The build emitted no" \
+                           "homepage, and deploying this would replace the live site with a" \
+                           "blank page. Find out why the homepage was not written; do not" \
+                           "raise or bypass this."
+                      exit 1
+                  fi
 
                   # Cloudflare Pages serves the deployment's own 404.html with a
                   # real 404 status, and without one falls back to the site root
@@ -609,255 +560,10 @@ jobs:
                       exit 1
                   }
 
-                  # THE TALLY COUNTS PUBLISHED PAGES, NOT index.html FILES, AND
-                  # WHERE THE LANDING LIVES DEPENDS ON THE INSTALLED
-                  # `@heroiclands/package-build` — read here because the tree
-                  # alone cannot say which shape it is: an `<dir>/index.html`
-                  # with no `homepage-*/` beside it is either the pre-15 shape
-                  # or the 22.4.0-and-later shape, and the two can be identical
-                  # on disk.
-                  #
-                  # THE INSTALLED VERSION, NOT THE DECLARED RANGE. A range is a
-                  # claim about what MAY be resolved, and permission is not
-                  # resolution: `>=9.0.0` permits 22.4.0 while the lockfile
-                  # pins 9, and reading the range would misjudge the shape the
-                  # lockfile actually resolved. It would also put semver-range
-                  # comparison (`9 || 22.4.0`, `*`, a tag) into shell to answer
-                  # a question the resolved version answers with a number
-                  # compare.
-                  #
-                  # The path `npm ci` installs a direct dependency to. The find
-                  # is the fallback for a hoisted or workspace layout, not the
-                  # primary: it must not pick a nested copy over the top-level
-                  # one.
-                  pbmanifest="node_modules/@heroiclands/package-build/package.json"
-                  #
-                  # package-build publishing its own documentation builds with
-                  # its own `bin/package-build.mjs` and installs no copy of
-                  # itself, so there its own `package.json` is the version in
-                  # use. Every other repository reads the installed package.
-                  if [ "$REPOSITORY" = "HeroicLands/package-build" ]; then
-                      pbmanifest="package.json"
-                  fi
-                  if [ ! -f "$pbmanifest" ]; then
-                      pbmanifest=$(find node_modules -path '*/@heroiclands/package-build/package.json' -print 2>/dev/null | head -n 1 || true)
-                  fi
-
-                  pbver=""
-                  if [ -n "$pbmanifest" ] && [ -f "$pbmanifest" ]; then
-                      # Node rather than `yq -p json`: it is guaranteed by the
-                      # setup step above, and reading the file as a path
-                      # sidesteps both shell quoting and the package's own
-                      # `exports` map.
-                      pbver=$(node -e 'const fs=require("fs");try{process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).version||""))}catch(e){}' "$pbmanifest" || true)
-                  fi
-
-                  pbmajor="${pbver%%.*}"
-                  case "$pbmajor" in ""|*[!0-9]*) pbmajor="" ;; esac
-
-                  # The minor is only needed to place a major-22 release either
-                  # side of 22.4.0; >= 15 is decided on the major alone, as it
-                  # always was.
-                  pbminor=""
-                  if [ -n "$pbmajor" ]; then
-                      pbrest="${pbver#*.}"
-                      if [ "$pbrest" != "$pbver" ]; then
-                          pbminor="${pbrest%%.*}"
-                          case "$pbminor" in ""|*[!0-9]*) pbminor="" ;; esac
-                      fi
-                  fi
-
-                  post15=""
-                  [ -n "$pbmajor" ] && [ "$pbmajor" -ge 15 ] && post15=1
-
-                  post2240=""
-                  if [ -n "$pbmajor" ]; then
-                      if [ "$pbmajor" -gt 22 ]; then
-                          post2240=1
-                      elif [ "$pbmajor" -eq 22 ] && [ -n "$pbminor" ] && [ "$pbminor" -ge 4 ]; then
-                          post2240=1
-                      fi
-                  fi
-
-                  # Matched as `homepage-*` rather than the conventional
-                  # `homepage-root`: the shortcode is the author's
-                  # (`HOMEPAGE_SHORTCODE` is documented as a convention), while
-                  # the `homepage-` prefix is the type's and is not.
-                  #
-                  # `-s` rather than `-f`: an empty landing is a collapsed
-                  # landing, and what is being looked for is a published page.
-                  landing=""
-                  for candidate in "${dir}"/homepage-*/index.html; do
-                      if [ -s "$candidate" ]; then landing="$candidate"; break; fi
-                  done
-
-                  # Directory presence alone, independent of what it holds: from
-                  # 22.4.0 this directory is never written, so its mere
-                  # existence — even carrying a landing that reads as valid — is
-                  # a stale build that an earlier package-build left behind.
-                  homepage_dir=""
-                  for candidate in "${dir}"/homepage-*; do
-                      if [ -d "$candidate" ]; then homepage_dir="$candidate"; break; fi
-                  done
-
-                  # UNREADABLE IS REFUSED, like every other guard in this file.
-                  # A version this guard cannot place is not license to deploy
-                  # pending its answer. Only fatal when no addressed landing was
-                  # found either — a >= 15, < 22.4.0 tree is judged on the
-                  # landing it carries, not the version, so an unreadable
-                  # version does not block it.
-                  if [ -z "$pbmajor" ] && [ -z "$landing" ]; then
-                      echo "::error::${dir} carries no landing at ${dir}/homepage-*/index.html," \
-                           "and the package-build that produced it could not be read from" \
-                           "node_modules/@heroiclands/package-build/package.json. A tree in that" \
-                           "state, from package-build 15 on, is a build that emitted no landing," \
-                           "which deploys as a blank page; below 15 it is the normal shape." \
-                           "Refusing rather than guessing."
-                      exit 1
-                  fi
-
-                  landing_is_root=""
-                  if [ -n "$post2240" ]; then
-                      # From 22.4.0 the landing is the site root itself — an
-                      # authored page, not Hugo's chrome — and no `homepage-*/`
-                      # is published beside it.
-                      if [ -n "$homepage_dir" ]; then
-                          echo "::error::${homepage_dir} exists, but this tree was built with" \
-                               "package-build ${pbver}, which publishes this package's landing at" \
-                               "${dir}/index.html — the site root — and writes no homepage-*/" \
-                               "directory. A homepage-*/ directory alongside a build of this" \
-                               "version is a stale build that was not cleaned; find out why and" \
-                               "rebuild rather than raising this."
-                          exit 1
-                      fi
-
-                      landing="${dir}/index.html"
-                      landing_is_root=1
-                      echo "${dir}/index.html is this package's landing (package-build ${pbver}" \
-                           "publishes it at the site root); counted as a page."
-                  elif [ -n "$landing" ]; then
-                      # >= 15, < 22.4.0: the landing is the addressed note found
-                      # above; ${dir}/index.html is Hugo's generated site root,
-                      # discounted at the tally below.
-                      :
-                  elif [ -n "$post15" ]; then
-                      echo "::error::${dir} carries no landing at ${dir}/homepage-*/index.html," \
-                           "but this tree was built with package-build ${pbver}, which publishes" \
-                           "a package's landing at an address of its own. The build emitted no" \
-                           "landing. Hugo generates ${dir}/index.html either way, so what is here" \
-                           "is chrome around an empty <main> and deploying it would replace the" \
-                           "live site with a blank page. Find out why the landing was not" \
-                           "written; do not raise or bypass this."
-                      exit 1
-                  else
-                      # Below 15: the site root IS the landing, and losing it
-                      # empties this file — already caught by the root check
-                      # above.
-                      landing="${dir}/index.html"
-                      landing_is_root=1
-                      echo "${dir} carries no addressed landing, and package-build ${pbver} does" \
-                           "not publish one: ${dir}/index.html is this package's landing and is" \
-                           "counted as a page."
-                  fi
-
-                  # THE LANDING CARRIES CONTENT. Hugo renders a site root whether
-                  # or not a homepage was written — chrome around an empty
-                  # `<main>` — so a build that emitted no landing can still leave
-                  # a non-empty `index.html` where the landing belongs, and the
-                  # size check above cannot tell it from a page. An empty
-                  # `<main>` (nothing but whitespace and comments) is that
-                  # signature. A page with no `<main>` element is not judged.
-                  if ! node -e '
-                      const html = require("fs").readFileSync(process.argv[1], "utf8");
-                      const main = /<main\b[^>]*>([\s\S]*?)<\/main>/i.exec(html);
-                      if (main && main[1].replace(/<!--[\s\S]*?-->/g, "").trim() === "") process.exit(3);
-                  ' "$landing"; then
-                      echo "::error::${landing} has an empty <main>: it is the site root Hugo" \
-                           "generates, not a landing page. The build emitted no landing, and" \
-                           "deploying this would replace the live site with a blank page. Find" \
-                           "out why the landing was not written; do not raise or bypass this."
-                      exit 1
-                  fi
-
-                  # A LANDING NOTHING ROUTES TO IS THE SAME BLANK PAGE, and only
-                  # the >= 15, < 22.4.0 shape can have one: its landing sits away
-                  # from the canonical address — `/<package>/`, the one every
-                  # link points at and the one the site router proxies — so a
-                  # build can emit a perfect landing, pass every check above,
-                  # and still serve Hugo's empty root at the address the
-                  # package is known by. Below 15 and from 22.4.0 on the landing
-                  # IS that address, so there is nothing to redirect.
-                  #
-                  # A GUARD, NOT A FALLBACK — unlike `_headers` above, which is
-                  # written for a build that emitted none. The destination here
-                  # is the landing's own address, which is package-specific, so
-                  # there is no generic file this workflow could write instead.
-                  #
-                  # BOTH PATH FORMS. Pages matches a rule against the raw
-                  # `url.pathname`, before any trailing-slash handling, so
-                  # `/<package>` and `/<package>/` are distinct keys and a rule
-                  # for one of them leaves the other on the blank root.
-                  #
-                  # THE STATUS COLUMN IS NOT READ. Every value a package would
-                  # plausibly write there arrives at the landing — 301, 302, or
-                  # a 200 rewrite — and what this guard exists to catch is a
-                  # rule that is absent, not one that is misnumbered. Rules are
-                  # matched exactly.
-                  if [ -z "$landing_is_root" ]; then
-                      # Derived from the landing that was actually found, never
-                      # assumed: the shortcode is the author's, so a package
-                      # that named its homepage note something else is measured
-                      # against its own address.
-                      landing_rel="${landing#"$SITE"/}"
-                      landing_url="/${landing_rel%index.html}"
-
-                      test -s "${SITE}/_redirects" || {
-                          echo "::error::${SITE}/_redirects is missing or empty, so nothing sends" \
-                               "/${PKG}/ to this package's landing at ${landing_url}. The landing" \
-                               "has an address of its own and /${PKG}/ is Hugo's site root — chrome" \
-                               "around an empty <main> — so deploying this would serve a blank page" \
-                               "at the address the package is known by. Write both forms:" \
-                               "'/${PKG}/  ${landing_url}  301' and '/${PKG}  ${landing_url}  301'."
-                          exit 1
-                      }
-
-                      for src in "/${PKG}/" "/${PKG}"; do
-                          # Pages applies the FIRST matching rule, so the first
-                          # is the one read here. `#` opens a comment anywhere
-                          # on a line.
-                          dest=$(awk -v s="$src" '{ sub(/#.*/, "") } $1 == s { print $2; exit }' \
-                              "${SITE}/_redirects")
-
-                          if [ -z "$dest" ]; then
-                              echo "::error::${SITE}/_redirects carries no rule for ${src}, so that" \
-                                   "address serves Hugo's empty site root instead of the landing at" \
-                                   "${landing_url}. Pages matches the raw path before any" \
-                                   "trailing-slash handling, so ${src} needs its own rule even when" \
-                                   "the other form has one. Add '${src}  ${landing_url}  301'."
-                              exit 1
-                          fi
-
-                          if [ "${dest%/}" != "${landing_url%/}" ]; then
-                              echo "::error::${SITE}/_redirects sends ${src} to ${dest}, but this" \
-                                   "package's landing is at ${landing_url}. Point it there: the" \
-                                   "package root has no page of its own to serve."
-                              exit 1
-                          fi
-                      done
-
-                      echo "${SITE}/_redirects sends /${PKG}/ and /${PKG} to ${landing_url}."
-                  fi
-
-                  files=$(find "$dir" -name index.html | wc -l | tr -d ' ')
-                  pages="$files"
-                  if [ -z "$landing_is_root" ]; then
-                      pages=$((files - 1))
-                      echo "${dir} carries ${files} index.html file(s); ${pages} page(s)." \
-                           "Discounting ${dir}/index.html — Hugo's site root, not a published" \
-                           "page; this package's landing is ${landing}."
-                  else
-                      echo "${dir} carries ${pages} page(s)."
-                  fi
+                  # THE TALLY COUNTS PUBLISHED PAGES: the landing and every page
+                  # beneath it is an `index.html`.
+                  pages=$(find "$dir" -name index.html | wc -l | tr -d ' ')
+                  echo "${dir} carries ${pages} page(s)."
 
                   if [ "$pages" -lt "$MIN" ]; then
                       echo "::error::${dir} carries ${pages} page(s), fewer than the ${MIN} a" \
@@ -867,16 +573,11 @@ jobs:
                   fi
                   if [ "$MAX" -gt 0 ] && [ "$pages" -gt "$MAX" ]; then
                       if [ "$MODE" = "homepage" ]; then
-                          hint=""
-                          if [ -z "$landing_is_root" ]; then
-                              hint=" Hugo's own site root at ${dir}/index.html is not one of them:"
-                              hint="${hint} it is already discounted."
-                          fi
                           echo "::error::${dir} carries ${pages} page(s). A homepage-only package" \
                                "publishes exactly one: this package's licence covers the module," \
                                "not the publication of its content. Find what is emitting the" \
-                               "extra pages — a taxonomy, a section landing, a content tree the" \
-                               "build still walks — rather than raising the bound.${hint}"
+                               "extra pages — a content tree the build still walks — rather" \
+                               "than raising the bound."
                       else
                           echo "::error::${dir} carries ${pages} page(s), more than the ${MAX}" \
                                "this package declares."

@@ -37,11 +37,9 @@ function guardRun(forge) {
  * @param {object} o
  * @param {string} o.forge          ".gitea"
  * @param {Record<string,string>} o.files  files under the site directory, `pkg/` prefixed
- * @param {string} [o.installed]    version of the installed package-build, if any
- * @param {string} [o.ownVersion]   version in the repository's own package.json
- * @param {string} [o.repository]   the caller's repository
+ * @param {string} [o.mode]         "homepage" (exactly one page) or "content"
  */
-function runGuard({ forge, files, installed, ownVersion, repository = "HeroicLands/consumer", mode = "homepage" }) {
+function runGuard({ forge, files, mode = "homepage" }) {
     const cwd = mkdtempSync(join(tmpdir(), "deploy-guard-"));
     try {
         const put = (rel, text) => {
@@ -50,10 +48,6 @@ function runGuard({ forge, files, installed, ownVersion, repository = "HeroicLan
         };
         put("site/_headers", "/*\n  X-Robots-Tag: noindex\n");
         for (const [rel, text] of Object.entries(files)) put(`site/${rel}`, text);
-        if (installed) {
-            put("node_modules/@heroiclands/package-build/package.json", JSON.stringify({ version: installed }));
-        }
-        if (ownVersion) put("package.json", JSON.stringify({ name: "@heroiclands/package-build", version: ownVersion }));
         const script = join(cwd, "guard.sh");
         writeFileSync(script, guardRun(forge));
         const env = {
@@ -63,7 +57,6 @@ function runGuard({ forge, files, installed, ownVersion, repository = "HeroicLan
             MODE: mode,
             MIN: mode === "homepage" ? "1" : "2",
             MAX: mode === "homepage" ? "1" : "0",
-            REPOSITORY: repository,
         };
         const run = spawnSync("bash", [script], { cwd, env, encoding: "utf8" });
         return { status: run.status, out: `${run.stdout}${run.stderr}` };
@@ -75,54 +68,50 @@ function runGuard({ forge, files, installed, ownVersion, repository = "HeroicLan
 const base = { "pkg/404.html": page("not found") };
 
 for (const forge of [".gitea"]) {
-    test(`${forge}: a package-build 22.4+ homepage build whose root has an empty <main> is refused`, () => {
-        const r = runGuard({ forge, installed: "23.1.1", files: { ...base, "pkg/index.html": EMPTY_ROOT } });
-        assert.notEqual(r.status, 0, r.out);
-        assert.match(r.out, /site\/pkg\/index\.html.*no content|empty <main>/s);
-    });
-
-    test(`${forge}: a package-build 22.4+ homepage build with an authored root passes`, () => {
-        const r = runGuard({ forge, installed: "23.1.1", files: { ...base, "pkg/index.html": LANDING } });
-        assert.equal(r.status, 0, r.out);
-    });
-
-    test(`${forge}: a package-build 15 to 22.3 build with only Hugo's root is refused`, () => {
-        const r = runGuard({ forge, installed: "21.0.0", files: { ...base, "pkg/index.html": EMPTY_ROOT } });
-        assert.notEqual(r.status, 0, r.out);
-        assert.match(r.out, /emitted no landing/);
-    });
-
-    test(`${forge}: a build with no readable package-build version and no landing is refused`, () => {
+    test(`${forge}: a homepage build whose root has an empty <main> is refused`, () => {
         const r = runGuard({ forge, files: { ...base, "pkg/index.html": EMPTY_ROOT } });
         assert.notEqual(r.status, 0, r.out);
+        assert.match(r.out, /empty <main>/);
     });
 
-    test(`${forge}: package-build's own documentation build reads its version from its own package.json`, () => {
-        const r = runGuard({
-            forge,
-            ownVersion: "23.1.1",
-            repository: "HeroicLands/package-build",
-            files: { ...base, "pkg/index.html": LANDING },
-        });
+    test(`${forge}: a homepage build with an authored root passes`, () => {
+        const r = runGuard({ forge, files: { ...base, "pkg/index.html": LANDING } });
         assert.equal(r.status, 0, r.out);
     });
 
-    test(`${forge}: package-build's own build with an empty root is still refused`, () => {
-        const r = runGuard({
-            forge,
-            ownVersion: "23.1.1",
-            repository: "HeroicLands/package-build",
-            files: { ...base, "pkg/index.html": EMPTY_ROOT },
-        });
+    test(`${forge}: a build with no landing is refused`, () => {
+        const r = runGuard({ forge, files: { ...base } });
         assert.notEqual(r.status, 0, r.out);
+        assert.match(r.out, /index\.html is missing or empty/);
     });
 
-    test(`${forge}: a consuming repository does not take its version from its own package.json`, () => {
+    test(`${forge}: a build with no 404 page is refused`, () => {
+        const r = runGuard({ forge, files: { "pkg/index.html": LANDING } });
+        assert.notEqual(r.status, 0, r.out);
+        assert.match(r.out, /404\.html is missing or empty/);
+    });
+
+    test(`${forge}: a homepage-only build that emitted a second page is refused`, () => {
         const r = runGuard({
             forge,
-            ownVersion: "23.1.1",
-            files: { ...base, "pkg/index.html": LANDING },
+            files: { ...base, "pkg/index.html": LANDING, "pkg/doc-extra/index.html": LANDING },
         });
         assert.notEqual(r.status, 0, r.out);
+        assert.match(r.out, /publishes exactly one/);
+    });
+
+    test(`${forge}: a content build under its floor is refused`, () => {
+        const r = runGuard({ forge, mode: "content", files: { ...base, "pkg/index.html": LANDING } });
+        assert.notEqual(r.status, 0, r.out);
+        assert.match(r.out, /fewer than the 2/);
+    });
+
+    test(`${forge}: a content build at its floor passes`, () => {
+        const r = runGuard({
+            forge,
+            mode: "content",
+            files: { ...base, "pkg/index.html": LANDING, "pkg/doc-extra/index.html": LANDING },
+        });
+        assert.equal(r.status, 0, r.out);
     });
 }
