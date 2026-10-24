@@ -10,7 +10,7 @@
 # is the Chrome for Testing build Playwright publishes for linux-arm64 and
 # linux-x64, pinned by version and SHA-256.
 
-ARG BASE=heroiclands/ci-job:1
+ARG BASE=heroiclands/ci-job:2
 FROM ${BASE}
 
 ARG TARGETARCH

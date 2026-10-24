@@ -14,11 +14,11 @@ from this directory.
 
 `heroiclands/ci-job:<tag>` is `catthehacker/ubuntu:act-24.04` (pinned by index
 digest, published for amd64 and arm64) plus the tool set the x86 runner's host
-provides: Node 24, Typst, Hugo (extended), GraphViz, poppler-utils, unzip, jq
-and yq v4. Node, Typst, Hugo and yq are pinned to exact versions with a SHA-256
-per architecture, verified during the build. GraphViz, poppler-utils, jq and
-unzip come from the Ubuntu 24.04 archive. Each host builds the image itself, so
-the local architecture is used; the tag in the runner configs (`ci-job:1`) is
+provides: Node 24, Typst, GraphViz, poppler-utils, unzip, jq and yq v4. Node,
+Typst and yq are pinned to exact versions with a SHA-256 per architecture,
+verified during the build. GraphViz, poppler-utils, jq and unzip come from the
+Ubuntu 24.04 archive. Each host builds the image itself, so
+the local architecture is used; the tag in the runner configs (`ci-job:2`) is
 the single selector.
 
 ## The e2e image
