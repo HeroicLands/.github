@@ -6,12 +6,15 @@
 
 /**
  * Open or update the Version Packages pull request on the forge this job runs
- * on, and schedule its squash merge.
+ * on. A new pull request opens as work in progress; a ready one has its squash
+ * merge scheduled.
  *
  * With changesets pending, the repository's version script runs on the release
  * branch, whatever it produced becomes one commit on the checked-out commit,
  * that commit is force-pushed with the bot's token, and the pull request is
- * opened or updated and scheduled to merge when its checks succeed. With none
+ * opened or updated. It opens with a `WIP:` title and no scheduled merge, so the
+ * owner reads the release before making it ready; a pull request the owner has
+ * made ready is scheduled to merge when its checks succeed. With none
  * pending it reports `has-changesets=false` and touches nothing.
  *
  * The API base is `GITHUB_API_URL`, which both Gitea and GitHub set. The
@@ -406,9 +409,10 @@ export async function main(env = process.env) {
             console.log(`version-pr: pull request #${number} is current.`);
         }
     } else {
-        number = (await api("POST", `/repos/${repo}/pulls`, { head: branch, base, title, body })).json?.number;
+        number = (await api("POST", `/repos/${repo}/pulls`, { head: branch, base, title: `WIP: ${title}`, body })).json?.number;
         if (!number) throw new Finding(`repos/${repo}/pulls`, "POST answered with no pull request number");
-        console.log(`version-pr: opened pull request #${number}.`);
+        held = true;
+        console.log(`version-pr: opened pull request #${number} as work in progress.`);
     }
 
     // A held release is a draft, and a draft carries no scheduled merge.

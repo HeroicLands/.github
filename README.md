@@ -675,8 +675,10 @@ the GitHub copy above. The release sequence:
 
 1. **Version Packages.** With changesets pending, `actions/version-pr` runs the
    repository's `changeset:version` script on `changeset-release/main` and
-   force-pushes the result as one commit with `RELEASE_BOT_TOKEN`. It opens or
-   updates the pull request and schedules its squash merge for when the checks
+   force-pushes the result as one commit with `RELEASE_BOT_TOKEN`. It opens the
+   pull request as `WIP:` with no scheduled merge, or updates the one already
+   open. The owner reads the release and removes the prefix; once a pull
+   request is ready, a later run schedules its squash merge for when the checks
    pass. Because the bot is a user of the forge, its push starts the
    repository's checks.
 2. **Decide.** With none pending, the job reads the version from
@@ -1247,8 +1249,10 @@ node --test actions/changesets/changesets.test.mjs
 ## `actions/version-pr`
 
 Opens or updates the Version Packages pull request on the forge the job runs
-on, and schedules its squash merge for when its checks succeed. It speaks the
-Gitea API at the runner's `GITHUB_API_URL`.
+on. A new pull request opens as `WIP:` with no scheduled merge; the owner reads
+the release and removes the prefix, and a later run schedules the squash merge
+of the ready pull request for when its checks succeed. It speaks the Gitea API
+at the runner's `GITHUB_API_URL`.
 
 ```yaml
 # a step in the release job, after a checkout with history and `npm ci`
@@ -1302,11 +1306,14 @@ runs exactly when a version bump has just merged.
    protected.
 5. **Pull request.** The open pull request from the release branch into the
    base is found by reading every page of open pull requests, 50 to a page,
-   and is updated in place; with none, one is opened. A pull request from a
-   fork's branch of the same name is not it. The body is
+   and is updated in place; with none, one is opened with the title
+   `WIP: chore(release): version packages`. A pull request from a fork's
+   branch of the same name is not it. The body is
    `Merging this pull request releases v<version>.` followed by that version's
    CHANGELOG section, taken by the same rule the release step uses.
-6. **Merge.** The squash merge is scheduled with
+6. **Merge.** A pull request whose title starts with `WIP:` or `[WIP]`, which
+   includes every one this run just opened, is held: no merge is scheduled, and
+   the run ends. For a ready pull request the squash merge is scheduled with
    `{"Do": "squash", "merge_when_checks_succeed": true}`. Gitea answers 201
    when it schedules and 405 when a merge is already scheduled; both are
    success. The pull request then merges by itself once branch protection's

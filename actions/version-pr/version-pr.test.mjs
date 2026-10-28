@@ -228,7 +228,7 @@ test("no changesets: reports false, calls nothing and pushes nothing", async () 
     assert.equal(git(remote, "branch", "--list", "changeset-release/main"), "");
 });
 
-test("a version script that does not commit ends as one commit on the base, and the pull request is opened and scheduled", async () => {
+test("a version script that does not commit ends as one commit on the base, and the pull request opens as work in progress", async () => {
     const { work, remote } = checkout({ commit: false });
     git(work, "config", "http.https://example.invalid/.extraheader", "AUTHORIZATION: basic c3RhbGU=");
     const base = git(work, "rev-parse", "HEAD");
@@ -242,13 +242,11 @@ test("a version script that does not commit ends as one commit on the base, and 
         "GET /api/v1/user",
         `GET /api/v1/repos/${REPO}/pulls`,
         `POST /api/v1/repos/${REPO}/pulls`,
-        `POST /api/v1/repos/${REPO}/pulls/100/merge`,
     ]);
     assert.ok(forge.requests.every((r) => r.auth === "token bot-token"));
     const opened = forge.requests[2].body;
-    assert.deepEqual({ ...opened, body: undefined }, { head: "changeset-release/main", base: "main", title: "chore(release): version packages", body: undefined });
+    assert.deepEqual({ ...opened, body: undefined }, { head: "changeset-release/main", base: "main", title: "WIP: chore(release): version packages", body: undefined });
     assert.equal(opened.body, "Merging this pull request releases v0.1.0.\n\n### Minor Changes\n\n- Maps load faster.\n");
-    assert.deepEqual(forge.requests[3].body, { Do: "squash", merge_when_checks_succeed: true });
 });
 
 test("a version script that commits on its own still ends as one commit on the base", async () => {
@@ -321,11 +319,11 @@ test("no token exits 1 before anything runs", async () => {
     assert.deepEqual(forge.requests, []);
 });
 
-test("an already-scheduled merge is success; any other refusal of the schedule is not", async () => {
-    const already = await run(checkout().work, await gitea({ merge: { status: 405, body: "pull request is already scheduled to auto merge when checks succeed [pull_id: 100]" } }));
+test("for a ready pull request, an already-scheduled merge is success; any other refusal of the schedule is not", async () => {
+    const already = await run(checkout().work, await gitea({ pulls: [{ number: 100, title: "chore(release): version packages", body: "old" }], merge: { status: 405, body: "pull request is already scheduled to auto merge when checks succeed [pull_id: 100]" } }));
     assert.equal(already.status, 0, already.stderr);
     assert.match(already.stdout, /already scheduled/);
-    const refused = await run(checkout().work, await gitea({ merge: { status: 405, body: "Please try again later" } }));
+    const refused = await run(checkout().work, await gitea({ pulls: [{ number: 100, title: "chore(release): version packages", body: "old" }], merge: { status: 405, body: "Please try again later" } }));
     assert.equal(refused.status, 1);
     assert.match(refused.stderr, new RegExp(`^repos/${REPO}/pulls/100/merge: error: POST answered 405: .*try again later`, "m"));
 });
@@ -382,13 +380,13 @@ test("a new commit on the base regenerates the branch from scratch", async () =>
     assert.ok(existsSync(join(work, "CHANGELOG.md")));
 });
 
-test("a bare 405 is asked once more, and a schedule or an already-scheduled answer then succeeds", async () => {
-    const scheduled = await run(checkout().work, await gitea({ merge: [{ status: 405, body: "" }, { status: 201, body: "" }] }));
+test("for a ready pull request, a bare 405 is asked once more, and a schedule or an already-scheduled answer then succeeds", async () => {
+    const scheduled = await run(checkout().work, await gitea({ pulls: [{ number: 100, title: "chore(release): version packages", body: "old" }], merge: [{ status: 405, body: "" }, { status: 201, body: "" }] }));
     assert.equal(scheduled.status, 0, scheduled.stderr);
     assert.match(scheduled.stdout, /scheduled the squash merge/);
     const already = await run(
         checkout().work,
-        await gitea({ merge: [{ status: 405, body: "" }, { status: 409, body: "pull request is already scheduled to auto merge when checks succeed [pull_id: 100]" }] }),
+        await gitea({ pulls: [{ number: 100, title: "chore(release): version packages", body: "old" }], merge: [{ status: 405, body: "" }, { status: 409, body: "pull request is already scheduled to auto merge when checks succeed [pull_id: 100]" }] }),
     );
     assert.equal(already.status, 0, already.stderr);
     assert.match(already.stdout, /already scheduled/);

@@ -2,10 +2,12 @@ name: Version Packages pull request
 description: >-
   With changesets pending, run the repository's version script on the release
   branch, make its result one commit on the checked-out commit, force-push it
-  with the bot's token, open or update the Version Packages pull request, and
-  schedule its squash merge for when its checks succeed. A pull request whose
-  title starts with WIP: or [WIP] is held: it is regenerated with that prefix
-  kept, and no merge is scheduled. With none pending,
+  with the bot's token, and open or update the Version Packages pull request.
+  A new pull request opens with a WIP: title and no scheduled merge, for the
+  owner to make ready. A pull request whose title starts with WIP: or [WIP] is
+  held: it is regenerated with that prefix kept, and no merge is scheduled. A
+  ready one has its squash merge scheduled for when its checks succeed. With
+  none pending,
   report has-changesets as false and change nothing. Uses the Gitea API at the
   runner's GITHUB_API_URL.
 
