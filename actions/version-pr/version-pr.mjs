@@ -140,6 +140,21 @@ export function findPull(pulls, { repo, branch, base }) {
 }
 
 /**
+ * The title an existing release pull request takes. An owner holds a release by
+ * putting a work-in-progress prefix (`WIP:` or `[WIP]`, the prefixes Gitea reads
+ * as a draft) at the front of its title; the prefix is kept so the hold survives
+ * regeneration.
+ *
+ * @param {string | undefined} current the pull request's present title
+ * @param {string} title the title this action writes
+ * @returns {{title: string, held: boolean}}
+ */
+export function heldTitle(current, title) {
+    const prefix = /^\s*(WIP:|\[WIP\])/i.exec(current ?? "")?.[1];
+    return prefix ? { title: `${prefix} ${title}`, held: true } : { title, held: false };
+}
+
+/**
  * Configuration overrides that drop every `http.*.extraheader` a checkout
  * persisted, so a push authenticates with the token this action is given
  * rather than with whichever token checked the tree out. An empty value resets
@@ -379,10 +394,13 @@ export async function main(env = process.env) {
 
     const existing = findPull(await openPulls(api, repo), { repo, branch, base });
     let number;
+    let held = false;
     if (existing) {
         number = existing.number;
-        if (existing.title !== title || (existing.body ?? "") !== body) {
-            await api("PATCH", `/repos/${repo}/pulls/${number}`, { title, body });
+        const want = heldTitle(existing.title, title);
+        held = want.held;
+        if (existing.title !== want.title || (existing.body ?? "") !== body) {
+            await api("PATCH", `/repos/${repo}/pulls/${number}`, { title: want.title, body });
             console.log(`version-pr: updated pull request #${number}.`);
         } else {
             console.log(`version-pr: pull request #${number} is current.`);
@@ -391,6 +409,14 @@ export async function main(env = process.env) {
         number = (await api("POST", `/repos/${repo}/pulls`, { head: branch, base, title, body })).json?.number;
         if (!number) throw new Finding(`repos/${repo}/pulls`, "POST answered with no pull request number");
         console.log(`version-pr: opened pull request #${number}.`);
+    }
+
+    // A held release is a draft, and a draft carries no scheduled merge.
+    if (held) {
+        console.log(`version-pr: #${number} is held as work in progress; no merge is scheduled.`);
+        output("has-changesets", "true");
+        output("pr-number", String(number));
+        return;
     }
 
     // Gitea can answer a bare 405 when the PR's checks are already green but its

@@ -7,7 +7,15 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { changelogSection, extraHeaderResets, findPull, nextPage, pendingChangesets, pullBody } from "./version-pr.mjs";
+import {
+    changelogSection,
+    extraHeaderResets,
+    findPull,
+    heldTitle,
+    nextPage,
+    pendingChangesets,
+    pullBody,
+} from "./version-pr.mjs";
 
 const action = new URL("./version-pr.mjs", import.meta.url).pathname;
 const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8"));
@@ -194,6 +202,14 @@ test("a fork's branch of the same name is not the release pull request", () => {
     assert.equal(findPull(pulls, { repo: REPO, branch: "changeset-release/main", base: "main" }).number, 3);
 });
 
+test("a held title keeps its work-in-progress prefix, and any other title is replaced", () => {
+    const title = "chore(release): version packages";
+    assert.deepEqual(heldTitle("WIP: chore(release): version packages", title), { title: `WIP: ${title}`, held: true });
+    assert.deepEqual(heldTitle("[WIP] old title", title), { title: `[WIP] ${title}`, held: true });
+    assert.deepEqual(heldTitle("old title", title), { title, held: false });
+    assert.deepEqual(heldTitle(undefined, title), { title, held: false });
+});
+
 test("every persisted extraheader is reset for the push", () => {
     assert.deepEqual(
         extraHeaderResets("http.http://atlas.example.invalid:3080/.extraheader AUTHORIZATION: basic eA==\nhttp.https://github.com/.extraheader AUTHORIZATION: basic eQ==\n"),
@@ -258,6 +274,18 @@ test("an open pull request on the second page is updated, not duplicated", async
     assert.match(patch.body.body, /^Merging this pull request releases v0\.1\.0\./);
     assert.ok(!forge.requests.some((r) => r.key === `POST /api/v1/repos/${REPO}/pulls`));
     assert.ok(forge.requests.some((r) => r.key === `POST /api/v1/repos/${REPO}/pulls/60/merge`));
+});
+
+test("a held release pull request is regenerated with its WIP: prefix and no scheduled merge", async () => {
+    const { work } = checkout();
+    const forge = await gitea({ pulls: [{ number: 61, title: "WIP: chore(release): version packages", body: "old" }] });
+    const out = await run(work, forge);
+    assert.equal(out.status, 0, out.stderr);
+    assert.equal(out.outputs["pr-number"], "61");
+    const patch = forge.requests.find((r) => r.key === `PATCH /api/v1/repos/${REPO}/pulls/61`);
+    assert.equal(patch.body.title, "WIP: chore(release): version packages");
+    assert.match(patch.body.body, /^Merging this pull request releases v0\.1\.0\./);
+    assert.ok(!forge.requests.some((r) => r.key === `POST /api/v1/repos/${REPO}/pulls/61/merge`));
 });
 
 test("a refused API call exits 1 with a finding naming the endpoint, the status and the body", async () => {
