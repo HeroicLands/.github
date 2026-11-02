@@ -123,7 +123,7 @@ jobs:
 | `build-script` | `build:site` | the npm script that builds the site |
 | `site-dir` | `build/site` | the directory uploaded — the deployment root |
 | `config` | `package-build.config.yaml` | read for `contentPackage` |
-| `node-version` | `24` | |
+| `node-version` | `CI_NODE_VERSION`, or `24` when unset | explicit caller overrides take precedence |
 | `domain-suffix` | `pkg.heroiclands.org` | the namespace the router derives an origin in |
 | `allow-unpublished` | `false` | build and verify without credentials instead of failing |
 
@@ -401,7 +401,7 @@ jobs:
 | `package-kind` | — | `system` or `module`; selects `build/dist/<kind>.zip` and `.json` |
 | `build-script` | `build:noci` | the npm script that builds and verifies the tree |
 | `post-release-script` | `""` | an npm script run after the Release, same job, built tree intact |
-| `node-version` | `24` | |
+| `node-version` | `CI_NODE_VERSION`, or `24` when unset | explicit caller overrides take precedence |
 
 `permissions` are declared by the **caller**, not here. A reusable workflow
 cannot grant itself more than the caller holds, and one caller — `sohl` —
@@ -758,7 +758,7 @@ publisher is bound to.
 
 | Input | Default | |
 | --- | --- | --- |
-| `node-version` | `24` | the Node major the versioning runs under |
+| `node-version` | `CI_NODE_VERSION`, or `24` when unset | optional Node-major override for versioning |
 
 | Output | |
 | --- | --- |

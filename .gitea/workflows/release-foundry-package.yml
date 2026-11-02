@@ -126,12 +126,10 @@ on:
                 type: string
             node-version:
                 description: >-
-                    Deliberately an input although all six callers pass the
-                    same value: a Node major has to be staged one repository at
-                    a time, and a shared workflow that cannot be lagged forces
-                    the bump on everyone at once.
+                    Optional Node major override. CI_NODE_VERSION selects the
+                    default, with Node 24 when the variable is unset.
                 required: false
-                default: "24"
+                default: ${{ vars.CI_NODE_VERSION || '24' }}
                 type: string
         outputs:
             released:
@@ -241,7 +239,7 @@ jobs:
             - name: Setup Node
               uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
               with:
-                  node-version: ${{ inputs.node-version }}
+                  node-version: ${{ inputs.node-version || vars.CI_NODE_VERSION || '24' }}
                   cache: npm
 
             - name: Install dependencies
@@ -459,7 +457,7 @@ jobs:
             - name: Check the runner has the tools the book uses
               if: ${{ needs.decide.outputs.release == 'true' && needs.decide.outputs.books == 'true' && inputs.book-runner != '' }}
               env:
-                  NODE_VERSION: ${{ inputs.node-version }}
+                  NODE_VERSION: ${{ inputs.node-version || vars.CI_NODE_VERSION || '24' }}
               run: |
                   missing=0
                   for tool in node npm typst jq; do
@@ -531,7 +529,7 @@ jobs:
             - name: Setup Node for the release
               uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
               with:
-                  node-version: ${{ inputs.node-version }}
+                  node-version: ${{ inputs.node-version || vars.CI_NODE_VERSION || '24' }}
                   cache: npm
 
             - name: Install the release dependencies

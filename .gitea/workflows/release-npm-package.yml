@@ -34,10 +34,10 @@ on:
         inputs:
             node-version:
                 description: >-
-                    The Node major the versioning runs under. An input so a
-                    Node major can be staged one repository at a time.
+                    Optional Node major override. CI_NODE_VERSION selects the
+                    default, with Node 24 when the variable is unset.
                 required: false
-                default: "24"
+                default: ${{ vars.CI_NODE_VERSION || '24' }}
                 type: string
         outputs:
             tagged:
@@ -100,7 +100,7 @@ jobs:
             - name: Setup Node
               uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
               with:
-                  node-version: ${{ inputs.node-version }}
+                  node-version: ${{ inputs.node-version || vars.CI_NODE_VERSION || '24' }}
                   cache: npm
 
             - name: Install dependencies

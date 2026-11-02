@@ -1,0 +1,30 @@
+{
+  "version": "v26.13.0",
+  "date": "2026-10-28",
+  "lts": "Lithium",
+  "files": [
+    "aix-ppc64",
+    "headers",
+    "linux-arm64",
+    "linux-ppc64le",
+    "linux-s390x",
+    "linux-x64",
+    "linux-x64-musl",
+    "osx-arm64-tar",
+    "osx-x64-pkg",
+    "osx-x64-tar",
+    "src",
+    "win-arm64-7z",
+    "win-arm64-zip",
+    "win-x64-7z",
+    "win-x64-exe",
+    "win-x64-msi",
+    "win-x64-zip"
+  ],
+  "index": "https://nodejs.org/dist/index.json",
+  "shasums": "https://nodejs.org/dist/v26.13.0/SHASUMS256.txt",
+  "sha256": {
+    "node-v26.13.0-linux-x64.tar.xz": "d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997",
+    "node-v26.13.0-linux-arm64.tar.xz": "406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92"
+  }
+}
