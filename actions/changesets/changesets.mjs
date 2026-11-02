@@ -7,10 +7,11 @@
 /**
  * Check a pull request's changesets.
  *
- * An ordinary pull request may add at most one `.changeset/*.md` file. The
- * Version Packages pull request — the one whose head is the release branch —
- * passes only when an approving review names its current head commit, so the
- * generated CHANGELOG section has been read after its last regeneration.
+ * An ordinary pull request may add one `.changeset/*.md` file for each
+ * user-visible change. The Version Packages pull request — the one whose head
+ * is the release branch — passes only when an approving review names its
+ * current head commit, so the generated CHANGELOG section has been read after
+ * its last regeneration.
  * Reports; never edits.
  * @module
  */
@@ -191,20 +192,6 @@ async function main() {
         `pull/${pr.number}/files`,
     );
     const added = addedChangesets(files);
-    if (added.length > 1) {
-        for (const path of added) {
-            console.error(
-                format({
-                    file: path,
-                    message:
-                        `one of ${added.length} changesets this pull request adds. ` +
-                        "A pull request carries at most one: fold them into a single " +
-                        "entry that describes the change as a reader meets it",
-                }),
-            );
-        }
-        process.exit(1);
-    }
     console.log(
         `changesets: pull request #${pr.number} adds ${added.length} changeset(s).`,
     );

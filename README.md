@@ -1198,14 +1198,12 @@ jobs:
 | `token` | — | needs `contents: read` and `pull-requests: read` |
 | `release-branch` | `changeset-release/main` | the Version Packages pull request's head branch |
 
-### An ordinary pull request adds at most one changeset
+### An ordinary pull request adds one changeset per user-visible change
 
 A changeset is a Markdown file directly under `.changeset/` other than its
-README. Two or more added by one pull request fail, one finding per file. The
-case this catches is stacking: when one pull request merges into another's
-branch, each brings its own changeset, and the release reaches its readers as
-fragments of one change. Fold them into a single entry written for the person
-who meets the change. Editing an existing changeset is not an addition.
+README. A pull request may add as many as it has distinct user-visible changes;
+each change gets its own entry. Editing an existing changeset is not an
+addition.
 
 ### The release pull request is approved on its final commit
 

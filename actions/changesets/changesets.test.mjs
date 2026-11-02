@@ -48,13 +48,10 @@ test("an approval passes only on the head commit, and a later decision supersede
     assert.equal(releaseReview([], "head").approved, false);
 });
 
-test("one changeset passes and two fail, naming each file first on its line", () => {
+test("multiple changesets pass", () => {
     assert.equal(run({ files: [cs("one")] }).status, 0);
     assert.equal(run({ files: [] }).status, 0);
-    const out = run({ files: [cs("one"), cs("two")] });
-    assert.equal(out.status, 1);
-    assert.match(out.stderr, /^\.changeset\/one\.md: error: one of 2 changesets/m);
-    assert.match(out.stderr, /^\.changeset\/two\.md: error: one of 2 changesets/m);
+    assert.equal(run({ files: [cs("one"), cs("two")] }).status, 0);
 });
 
 test("the release pull request needs an approval on its head, whatever changesets it removes", () => {
@@ -129,14 +126,16 @@ test("Gitea: a dismissed approval fails the release pull request", () => {
     assert.match(out.stderr, /no approving review names its head commit/);
 });
 
-test("a changeset on the second page of a Gitea file list is found", () => {
+test("multiple changesets across pages pass on both forges", () => {
     const event = { pull_request: { number: 7, head: { ref: "feature/1_x", sha: "head" } } };
     const filler = Array.from({ length: 58 }, (_, i) => ({ filename: `src/f${i}.js`, status: "modified" }));
     const files = [cs("one"), ...filler, cs("two")];
     for (const style of ["gitea", "github"]) {
         const out = runOn(style, { event, files });
-        assert.equal(out.status, 1, style);
-        assert.match(out.stderr, /^\.changeset\/two\.md: error: one of 2 changesets/m, style);
+        assert.equal(out.status, 0, `${style}: ${out.stderr}`);
+        assert.match(out.stdout, /adds 2 changeset\(s\)/, style);
     }
-    assert.equal(runOn("gitea", { event, files: [cs("one"), ...filler] }).status, 0);
+    const onePage = runOn("gitea", { event, files: [cs("one"), ...filler] });
+    assert.equal(onePage.status, 0);
+    assert.match(onePage.stdout, /adds 1 changeset\(s\)/);
 });

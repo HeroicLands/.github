@@ -1,7 +1,7 @@
 name: Changesets
 description: >-
-  Fail when a pull request adds more than one changeset, and fail the Version
-  Packages pull request until an approving review names its current head
+  Check the changesets a pull request adds, and fail the Version Packages pull
+  request until an approving review names its current head
   commit, so the generated release note is read after its last regeneration.
   Reports; never edits.
 
