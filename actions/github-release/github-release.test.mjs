@@ -56,7 +56,8 @@ function checkout({ repository = `git+${SITE}.git`, annotated = false, module = 
 /**
  * A fake of GitHub's REST API, its uploads host and the web host's download
  * redirects, on one server. Releases and refs are built from recorded
- * responses. `ref.after` is how many polls answer 404 before the tag appears.
+ * responses. `ref.after` is how many polls answer 404 before the tag appears;
+ * `ref.firstDelayMs` delays the first tag response.
  */
 async function github({ ref, releases = [], latest, freezeLatest = false, shortBy = 0, redirectTag } = {}) {
     const state = { requests: [], releases: [], nextId: 500, nextAsset: 9000, latest, polls: 0 };
@@ -95,6 +96,9 @@ async function github({ ref, releases = [], latest, freezeLatest = false, shortB
 
         if (req.method === "GET" && path === `${api}/git/ref/tags/${TAG}`) {
             state.polls++;
+            if (state.polls === 1 && ref?.firstDelayMs) {
+                await new Promise((resolve) => setTimeout(resolve, ref.firstDelayMs));
+            }
             if (!ref || state.polls <= (ref.after ?? 0)) return notFound();
             const body = structuredClone(fixture("github-ref-annotated.json"));
             body.ref = `refs/tags/${TAG}`;
@@ -312,15 +316,23 @@ test("a mirrored tag at a different commit stops the release before anything is 
     assert.ok(!fake.requests.some((r) => r.path.includes("/releases")));
 });
 
-test("a tag the mirror never delivers times out", async () => {
-    const c = checkout();
-    const fake = await github({ ref: { sha: c.commit, after: 1e9 } });
-    const out = await run(c.dir, fake, { RELEASE_WAIT_SECONDS: "0.2", RELEASE_POLL_SECONDS: "0.05" });
-    assert.equal(out.status, 1);
-    assert.match(out.stderr, new RegExp(`^repos/${OWNER}/${REPO}/git/ref/tags/${TAG}: error: the push mirror has not delivered ${TAG} to GitHub after 0\\.2 s; re-run once it has`, "m"));
-    assert.ok(fake.polls >= 2);
-    assert.deepEqual(fake.writes(), []);
-});
+for (const firstDelayMs of [0, 250])
+    test(`a tag the mirror never delivers times out${firstDelayMs ? " after a slow first response" : ""}`, async () => {
+        const c = checkout();
+        const fake = await github({ ref: { sha: c.commit, after: 1e9, firstDelayMs } });
+        const out = await run(c.dir, fake, { RELEASE_WAIT_SECONDS: "0.2", RELEASE_POLL_SECONDS: "0.05" });
+        assert.equal(out.status, 1);
+        assert.match(
+            out.stderr,
+            new RegExp(
+                `^repos/${OWNER}/${REPO}/git/ref/tags/${TAG}: error: the push mirror has not delivered ${TAG} to GitHub after 0\\.2 s; re-run once it has`,
+                "m",
+            ),
+        );
+        assert.ok(fake.polls >= 1);
+        if (firstDelayMs) assert.equal(fake.polls, 1);
+        assert.deepEqual(fake.writes(), []);
+    });
 
 test("a published release with exactly these assets is a no-op", async () => {
     const c = checkout();
