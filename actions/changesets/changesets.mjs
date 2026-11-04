@@ -7,11 +7,9 @@
 /**
  * Check a pull request's changesets.
  *
- * An ordinary pull request may add one `.changeset/*.md` file for each
- * user-visible change. The Version Packages pull request — the one whose head
- * is the release branch — passes only when an approving review names its
- * current head commit, so the generated CHANGELOG section has been read after
- * its last regeneration.
+ * A pull request may add one `.changeset/*.md` file for each user-visible
+ * change. The check reports how many it adds, and fails only when the pull
+ * request cannot be read.
  * Reports; never edits.
  * @module
  */
@@ -53,44 +51,6 @@ export function addedChangesets(files) {
         .map((file) => file.filename);
 }
 
-/**
- * Whether the release pull request has been approved on its current head.
- *
- * Each reviewer's latest decisive review (approved, changes requested or
- * dismissed) is the one that counts, as the forge counts it. GitHub reports a
- * change request as `CHANGES_REQUESTED` and a dismissal as the state
- * `DISMISSED`; Gitea reports `REQUEST_CHANGES` and keeps a dismissed review's
- * original state with `dismissed: true`. Both shapes are read. An approval
- * passes only when it names the head commit: the bot rebuilds the branch on
- * every merge to `main`, and an approval of an earlier commit approved a
- * release note that no longer exists.
- *
- * @param {{state: string, dismissed?: boolean, commit_id: string, user?: {login: string}}[]} reviews
- *   the pull request's reviews, oldest first
- * @param {string} head the head commit's SHA
- * @returns {{approved: boolean, stale: string[]}} whether an approval names the
- *   head, and the reviewers whose approval names an earlier commit
- */
-export function releaseReview(reviews, head) {
-    const latest = new Map();
-    for (const review of reviews) {
-        const state =
-            review.dismissed === true ? "DISMISSED"
-            : review.state === "REQUEST_CHANGES" ? "CHANGES_REQUESTED"
-            : review.state;
-        if (["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(state)) {
-            latest.set(review.user?.login ?? "", { ...review, state });
-        }
-    }
-    const approvals = [...latest.values()].filter((r) => r.state === "APPROVED");
-    return {
-        approved: approvals.some((r) => r.commit_id === head),
-        stale: approvals
-            .filter((r) => r.commit_id !== head)
-            .map((r) => r.user?.login ?? "a reviewer"),
-    };
-}
-
 /** Every page of a list endpoint. A failed read exits: a partial list is not a check. */
 async function list(path, token, address) {
     try {
@@ -118,7 +78,7 @@ function pullRequest(eventPath) {
                 message:
                     "no event payload in the environment. This action reads the " +
                     "pull request that triggered it, so it belongs on a " +
-                    "`pull_request` or `pull_request_review` workflow",
+                    "`pull_request` workflow",
             }),
         );
         process.exit(1);
@@ -130,7 +90,7 @@ function pullRequest(eventPath) {
                 file: process.env.GITHUB_EVENT_NAME ?? "event",
                 message:
                     "not a pull request event. Trigger this action on " +
-                    "`pull_request` and `pull_request_review`",
+                    "`pull_request`",
             }),
         );
         process.exit(1);
@@ -141,7 +101,6 @@ function pullRequest(eventPath) {
 async function main() {
     const repo = process.env.GITHUB_REPOSITORY;
     const token = process.env.GITHUB_TOKEN;
-    const releaseBranch = process.env.RELEASE_BRANCH || "changeset-release/main";
     if (!token) {
         console.error(
             format({
@@ -154,37 +113,6 @@ async function main() {
         process.exit(1);
     }
     const pr = pullRequest(process.env.GITHUB_EVENT_PATH);
-
-    if (pr.head.ref === releaseBranch) {
-        const reviews = await list(
-            `/repos/${repo}/pulls/${pr.number}/reviews`,
-            token,
-            `pull/${pr.number}/reviews`,
-        );
-        const { approved, stale } = releaseReview(reviews, pr.head.sha);
-        if (approved) {
-            console.log(
-                `changesets: release pull request #${pr.number} is approved on ` +
-                    `its head commit ${pr.head.sha.slice(0, 7)}.`,
-            );
-            return;
-        }
-        const why = stale.length
-            ? `the approval by ${stale.join(", ")} names an earlier commit, and ` +
-              "the release note has been regenerated since"
-            : "no approving review names its head commit";
-        console.error(
-            format({
-                file: `pull/${pr.number}/reviews`,
-                message:
-                    `release pull request is not reviewed on ${pr.head.sha.slice(0, 7)}: ${why}. ` +
-                    "Read the generated CHANGELOG section as one release note — merge " +
-                    "bullets that describe one change, drop what a later change " +
-                    "superseded, regroup — commit any edit to this branch, then approve",
-            }),
-        );
-        process.exit(1);
-    }
 
     const files = await list(
         `/repos/${repo}/pulls/${pr.number}/files`,

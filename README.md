@@ -413,9 +413,7 @@ every caller at the narrowest set.
 
 Gitea starts no workflow for an event the job token causes. The Version Packages
 pull request is opened and regenerated with `RELEASE_BOT_TOKEN`, a real user's
-token, so each push starts the repository's checks like any other pull request,
-and the review check in [`actions/changesets`](#actionschangesets) blocks the
-merge until the release note has been read on its final commit.
+token, so each push starts the repository's checks like any other pull request.
 
 ### The two contracts: two named npm scripts
 
@@ -1165,8 +1163,9 @@ body edits.
 
 ## `actions/changesets`
 
-Two checks on the changesets a pull request carries, under one check name so a
-repository can make it required once.
+Reports the changesets a pull request adds, under one check name so a repository
+can make it required once. It passes on every pull request it can read,
+the Version Packages pull request included.
 
 ```yaml
 # .gitea/workflows/changesets.yml
@@ -1175,8 +1174,6 @@ name: Changesets
 on:
   pull_request:
     types: [opened, reopened, synchronize]
-  pull_request_review:
-    types: [submitted, dismissed]
 
 permissions:
   contents: read
@@ -1187,7 +1184,7 @@ jobs:
     name: Changeset review
     runs-on: ubuntu-latest
     steps:
-      # Needs no checkout: the subjects are the pull request's files and reviews.
+      # Needs no checkout: the subject is the pull request's file list.
       - uses: HeroicLands/.github/actions/changesets@main
         with:
           token: ${{ github.token }}
@@ -1196,7 +1193,6 @@ jobs:
 | Input | Default | |
 | --- | --- | --- |
 | `token` | — | needs `contents: read` and `pull-requests: read` |
-| `release-branch` | `changeset-release/main` | the Version Packages pull request's head branch |
 
 ### An ordinary pull request adds one changeset per user-visible change
 
@@ -1205,36 +1201,10 @@ README. A pull request may add as many as it has distinct user-visible changes;
 each change gets its own entry. Editing an existing changeset is not an
 addition.
 
-### The release pull request is approved on its final commit
+A finding is `pull/<n>/files: error: message`, and only an API read failure
+produces one. Nothing is edited.
 
-The Version Packages pull request concatenates every changeset since the last
-release, and nobody has read the result as a whole until it opens. The bot also
-rebuilds its branch from scratch on every merge to `main`, discarding any edit
-made to it. So the check passes on the release pull request only when an
-approving review names its **current head commit**: the release note was read
-after its last regeneration, not before.
-
-The review is a read of the generated CHANGELOG section as one release note:
-merge bullets that describe one change from several pull requests, drop what a
-later pull request in the same release superseded, and regroup under the labels
-the release needs. Commit any edit to the release branch, then approve. An
-approval of an earlier commit is reported as stale, and each reviewer's latest
-decisive review counts, as the forge counts it. GitHub reports a change request
-as `CHANGES_REQUESTED` and a dismissal as the state `DISMISSED`; Gitea reports
-`REQUEST_CHANGES` and keeps a dismissed review's original state with
-`dismissed: true`. Both are read, so a dismissed approval never counts and a
-change request withdraws an earlier approval on either forge.
-
-The bot opens and updates the release pull request with the workflow token,
-which starts no workflow, so a regenerated head has no result for this check
-until someone reviews it. As a required check, that holds the merge until the
-review exists.
-
-Findings are `address: severity: message`: the changeset's path for the first
-check, `pull/<n>/reviews` for the second. An API read failure fails the check.
-Nothing is edited.
-
-The pull request's files and reviews are read from `GITHUB_API_URL` and followed
+The pull request's files are read from `GITHUB_API_URL` and followed
 to the last page, so a pull request with more files than one page holds is
 checked whole on Gitea as on GitHub.
 

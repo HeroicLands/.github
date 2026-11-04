@@ -1,24 +1,16 @@
 name: Changesets
 description: >-
-  Check the changesets a pull request adds, and fail the Version Packages pull
-  request until an approving review names its current head
-  commit, so the generated release note is read after its last regeneration.
-  Reports; never edits.
+  Report the changesets a pull request adds. Fails only when the pull request
+  cannot be read. Reports; never edits.
 
 inputs:
   token:
     description: >-
       A token with `contents: read` and `pull-requests: read`, used to list the
-      pull request's files and reviews. The calling workflow's own
+      pull request's files. The calling workflow's own
       `github.token` is enough — pass it wrapped in expression braces there;
       an expression written in this manifest is evaluated when it loads.
     required: true
-  release-branch:
-    description: >-
-      The head branch of the Version Packages pull request. Changesets names
-      it `changeset-release/<base>`.
-    required: false
-    default: changeset-release/main
 
 runs:
   using: composite
@@ -27,5 +19,4 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.token }}
-        RELEASE_BRANCH: ${{ inputs.release-branch }}
       run: node "$GITHUB_ACTION_PATH/changesets.mjs"

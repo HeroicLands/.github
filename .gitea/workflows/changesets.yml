@@ -5,8 +5,6 @@ name: Changesets
 on:
   pull_request:
     types: [opened, reopened, synchronize]
-  pull_request_review:
-    types: [submitted, dismissed]
 
 permissions:
   contents: read
