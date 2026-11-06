@@ -1460,3 +1460,16 @@ node --test actions/version-pr/version-pr.test.mjs actions/github-release/github
 
 The Dockerfiles for the Gitea Actions runners' job images. See
 [`runners/README.md`](runners/README.md).
+
+## Internal page deployment and manual CDN destinations
+
+The reusable [internal deployment workflow](.gitea/workflows/deploy-internal-site.yml)
+consumes pages already built by the caller and publishes only their package
+prefix to atlas. Building and manual CDN publication remain separate. Existing
+public release deployment continues through Cloudflare Pages.
+
+The manual [CDN workflow](.gitea/workflows/publish-package-cdn.yml) accepts
+`dest: internal` (default) or `dest: cloudflare`. Internal writes use the named
+`PREVIEW_SSH_PRIVATE_KEY`; public writes use the existing R2 secrets. See the
+[publishing guide](docs/internal-site-publishing.md) for caller inputs, the
+artifact/receipt format, credential setup and scoped developer checks.

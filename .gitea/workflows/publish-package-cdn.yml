@@ -15,6 +15,11 @@ name: Publish pictures to the CDN
 on:
     workflow_call:
         inputs:
+            dest:
+                description: Internal atlas storage or public Cloudflare R2.
+                required: false
+                default: internal
+                type: string
             set:
                 description: >-
                     The set file's name under the package's CDN root, a `.json`
@@ -36,20 +41,29 @@ on:
                 default: ${{ vars.CI_NODE_VERSION || '24' }}
                 type: string
         secrets:
+            PREVIEW_SSH_PRIVATE_KEY:
+                description: Key for the internal forced-rrsync receiver; required for internal writes.
+                required: false
             CDN_ENDPOINT:
                 description: The S3 endpoint of the bucket served at `site.assets`.
-                required: true
+                required: false
             CDN_BUCKET:
                 description: The bucket name.
-                required: true
+                required: false
             CDN_ACCESS_KEY_ID:
                 description: The access key id with write access to the bucket.
-                required: true
+                required: false
             CDN_SECRET_ACCESS_KEY:
                 description: The secret access key paired with the access key id.
-                required: true
+                required: false
     workflow_dispatch:
         inputs:
+            dest:
+                description: Internal atlas storage or public Cloudflare R2.
+                required: false
+                default: internal
+                type: choice
+                options: [internal, cloudflare]
             set:
                 description: The set file's name under the package's CDN root, such as `alt-art.json`.
                 required: true
@@ -99,10 +113,22 @@ jobs:
             - name: Install dependencies
               run: npm ci --no-audit --no-fund
 
+            - name: Checkout trusted CDN transport adapter
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  repository: HeroicLands/.github
+                  github-server-url: https://git.pupluppy.org
+                  # Commit and review the helper first; advance both workflow pins together.
+                  ref: f1e8770773746de481be1a97e9f039878985d010
+                  path: trusted-cdn
+                  persist-credentials: false
+
             # Inputs reach the script through the environment, never through
             # interpolation into it.
             - name: Publish the pictures
               env:
+                  CDN_DEST: ${{ inputs.dest || 'internal' }}
+                  PREVIEW_SSH_PRIVATE_KEY: ${{ secrets.PREVIEW_SSH_PRIVATE_KEY }}
                   SET: ${{ inputs.set }}
                   SET_NAME: ${{ inputs.name }}
                   DRY_RUN: ${{ inputs.dry-run }}
@@ -110,9 +136,4 @@ jobs:
                   CDN_BUCKET: ${{ secrets.CDN_BUCKET }}
                   CDN_ACCESS_KEY_ID: ${{ secrets.CDN_ACCESS_KEY_ID }}
                   CDN_SECRET_ACCESS_KEY: ${{ secrets.CDN_SECRET_ACCESS_KEY }}
-              run: |
-                  args=(--set "$SET" --name "$SET_NAME")
-                  if [ "$DRY_RUN" = "true" ]; then
-                      args+=(--dry-run)
-                  fi
-                  npx --no-install package-build cdn publish "${args[@]}"
+              run: node trusted-cdn/actions/internal-site-deploy/publish.mjs cdn

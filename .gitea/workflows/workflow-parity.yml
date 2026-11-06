@@ -27,6 +27,19 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: ${{ vars.CI_NODE_VERSION || '24' }}
+      # The publication fixture exercises real rsync deletion. Light job images
+      # need this binary; host runners that already provide it keep theirs.
+      - name: Ensure rsync is available for publication tests
+        run: |
+          if ! command -v rsync >/dev/null 2>&1; then
+            test -f /.dockerenv || {
+              echo "rsync is required on this host runner; provision it before running publication tests." >&2
+              exit 1
+            }
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends rsync
+          fi
+          rsync --version
       - run: npm ci --prefix ci
       - run: sh ci/githooks.test.sh
       - run: node --test ci/*.test.mjs

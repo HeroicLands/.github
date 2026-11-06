@@ -1,0 +1,83 @@
+# Consume pages built by the caller. No content code or package build runs here.
+name: Deploy a built site internally
+
+on:
+    workflow_call:
+        inputs:
+            artifact-name:
+                description: Artifact from this run containing publication.json and site/.
+                required: true
+                type: string
+            package:
+                description: Package prefix, such as thalorna.
+                required: true
+                type: string
+            source-sha:
+                description: Full main-history commit SHA used by the build.
+                required: true
+                type: string
+            min-pages:
+                description: Minimum index.html count inside the package prefix.
+                default: 1
+                type: number
+            max-pages:
+                description: Maximum count, or zero for no ceiling.
+                default: 0
+                type: number
+            node-version:
+                description: Node major used by the trusted publisher.
+                required: false
+                default: ${{ vars.CI_NODE_VERSION || '24' }}
+                type: string
+        secrets:
+            PREVIEW_SSH_PRIVATE_KEY:
+                description: Key for atlas's forced-rrsync preview-publish receiver.
+                required: true
+
+permissions:
+    contents: read
+
+jobs:
+    deploy:
+        if: ${{ github.server_url != 'https://github.com' && vars.HL_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main' }}
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        concurrency:
+            group: internal-site-${{ inputs.package }}
+            cancel-in-progress: false
+        env:
+            PUBLICATION_PACKAGE: ${{ inputs.package }}
+            SOURCE_SHA: ${{ inputs.source-sha }}
+            SOURCE_REPOSITORY: ${{ github.repository }}
+            MIN_PAGES: ${{ inputs.min-pages }}
+            MAX_PAGES: ${{ inputs.max-pages }}
+        steps:
+            - name: Checkout trusted deployment tools
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  repository: HeroicLands/.github
+                  github-server-url: https://git.pupluppy.org
+                  # Commit and review the helper first; advance both workflow pins together.
+                  ref: f1e8770773746de481be1a97e9f039878985d010
+                  path: trusted-deploy
+                  persist-credentials: false
+
+            - name: Setup Node.js
+              uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+              with:
+                  node-version: ${{ inputs.node-version || vars.CI_NODE_VERSION || '24' }}
+
+            - name: Download built pages
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+              with:
+                  name: ${{ inputs.artifact-name }}
+                  path: publication
+
+            - name: Validate artifact before deployment credentials
+              run: node trusted-deploy/actions/internal-site-deploy/publish.mjs validate publication
+
+            - name: Publish pages and completion receipt
+              env:
+                  PREVIEW_SSH_PRIVATE_KEY: ${{ secrets.PREVIEW_SSH_PRIVATE_KEY }}
+                  GITEA_TOKEN: ${{ github.token }}
+              run: node trusted-deploy/actions/internal-site-deploy/publish.mjs publish publication
