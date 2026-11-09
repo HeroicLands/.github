@@ -29,6 +29,19 @@ RUN apt-get update \
       graphviz jq poppler-utils unzip xz-utils \
  && rm -rf /var/lib/apt/lists/*
 
+# Python 3.13, which the x86 runner's Debian host has and the fonts build pins
+# (Ubuntu 24.04 ships 3.12, and the build's output depends on the version).
+# It comes from the deadsnakes archive for Ubuntu, for amd64 and arm64; the
+# system python3 stays 3.12.
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends software-properties-common gpg-agent \
+ && add-apt-repository -y ppa:deadsnakes/ppa \
+ && apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3.13 python3.13-venv python3.13-dev \
+ && apt-get purge -y software-properties-common gpg-agent \
+ && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/*
+
 RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
     case "${arch}" in \
       amd64) node_arch=x64;    node_sha="${NODE_SHA256_AMD64}";  typst_arch=x86_64;  typst_sha="${TYPST_SHA256_AMD64}"; \
@@ -50,4 +63,4 @@ RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
 # The base image puts its own Node on PATH ahead of /usr/local/bin.
 ENV PATH=/usr/local/bin:${PATH}
 
-RUN node --version && typst --version && dot -V && pdftotext -v && jq --version && yq --version
+RUN node --version && typst --version && dot -V && pdftotext -v && jq --version && yq --version && python3.13 -m venv /tmp/venv && /tmp/venv/bin/pip --version && rm -rf /tmp/venv

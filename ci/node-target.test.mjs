@@ -111,7 +111,7 @@ test("the actual Foundry release runner guard accepts matching majors and refuse
         assert.equal(result.status, pass ? 0 : 1, result.stdout + result.stderr);
     }
 });
-test("job image pins the official two-architecture Node release and tag-three e2e base", () => {
+test("job image pins the official two-architecture Node release and tag-four e2e base", () => {
     const release = JSON.parse(fs.readFileSync(new URL("fixtures/node26-release.json", import.meta.url)));
     assert.match(release.version, /^v26\.\d+\.\d+$/);
     assert(release.lts);
@@ -131,6 +131,6 @@ test("job image pins the official two-architecture Node release and tag-three e2
     );
     assert.match(
         fs.readFileSync(new URL("runners/image/Dockerfile.e2e", root), "utf8"),
-        /^ARG BASE=heroiclands\/ci-job:3$/m,
+        /^ARG BASE=heroiclands\/ci-job:4$/m,
     );
 });

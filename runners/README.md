@@ -14,11 +14,11 @@ from this directory.
 
 `heroiclands/ci-job:<tag>` is `catthehacker/ubuntu:act-24.04` (pinned by index
 digest, published for amd64 and arm64) plus the tool set the x86 runner's host
-provides: Node, Typst, GraphViz, poppler-utils, unzip, jq and yq v4. Node,
+provides: Node, Typst, GraphViz, poppler-utils, unzip, jq, yq v4 and Python 3.13 (with `venv`; the fonts build pins it, and Ubuntu 24.04's own `python3` is 3.12). Node,
 Typst and yq are pinned to exact versions with a SHA-256 per architecture,
 verified during the build. GraphViz, poppler-utils, jq and unzip come from the
-Ubuntu 24.04 archive. Each host builds the image for its local architecture;
-the tag in the runner configuration, such as `ci-job:3`, selects that image.
+Ubuntu 24.04 archive, and Python 3.13 from the deadsnakes archive for Ubuntu. Each host builds the image for its local architecture;
+the tag in the runner configuration, such as `ci-job:4`, selects that image.
 
 ## The e2e image
 
@@ -78,12 +78,12 @@ the [official checksums](https://nodejs.org/dist/v26.13.0/SHASUMS256.txt).
 
 Choose a new image tag and build from the reviewed shared-source SHA on both
 architectures before changing selectors. The job and e2e image tags match,
-and the e2e build names that job image as its base. For example, tag 3 uses:
+and the e2e build names that job image as its base. For example, tag 4 uses:
 
 ```sh
-docker build -f runners/image/Dockerfile -t heroiclands/ci-job:3 .
+docker build -f runners/image/Dockerfile -t heroiclands/ci-job:4 .
 docker build -f runners/image/Dockerfile.e2e \
-  --build-arg BASE=heroiclands/ci-job:3 -t heroiclands/ci-e2e:3 .
+  --build-arg BASE=heroiclands/ci-job:4 -t heroiclands/ci-e2e:4 .
 ```
 
 The owner coordinates the host binaries, image selectors and central variable
@@ -101,7 +101,7 @@ gate values and let active releases finish. Other setup-node jobs select their
 runtime independently of the host.
 
 Before switching, verify the candidate images and dry-run package-build's
-`ubuntu-vm` job using the candidate tag, such as `ci-job:3` for Node 26.
+`ubuntu-vm` job using the candidate tag, such as `ci-job:4` (Node 26 and Python 3.13).
 Keep the exact-major release guard and required checks intact. Resume the six
 release gates with their captured values only when the requested and effective
 release majors agree.
