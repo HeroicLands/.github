@@ -26,7 +26,7 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      graphviz jq poppler-utils unzip xz-utils \
+      graphviz jq poppler-utils rsync unzip xz-utils \
  && rm -rf /var/lib/apt/lists/*
 
 # Python 3.13, which the x86 runner's Debian host has and the fonts build pins
@@ -63,4 +63,4 @@ RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
 # The base image puts its own Node on PATH ahead of /usr/local/bin.
 ENV PATH=/usr/local/bin:${PATH}
 
-RUN node --version && typst --version && dot -V && pdftotext -v && jq --version && yq --version && python3.13 -m venv /tmp/venv && /tmp/venv/bin/pip --version && rm -rf /tmp/venv
+RUN node --version && typst --version && dot -V && pdftotext -v && jq --version && rsync --version && yq --version && python3.13 -m venv /tmp/venv && /tmp/venv/bin/pip --version && rm -rf /tmp/venv

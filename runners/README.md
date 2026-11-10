@@ -14,9 +14,9 @@ from this directory.
 
 `heroiclands/ci-job:<tag>` is `catthehacker/ubuntu:act-24.04` (pinned by index
 digest, published for amd64 and arm64) plus the tool set the x86 runner's host
-provides: Node, Typst, GraphViz, poppler-utils, unzip, jq, yq v4 and Python 3.13 (with `venv`; the fonts build pins it, and Ubuntu 24.04's own `python3` is 3.12). Node,
+provides: Node, Typst, GraphViz, poppler-utils, unzip, rsync, jq, yq v4 and Python 3.13 (with `venv`; the fonts build pins it, and Ubuntu 24.04's own `python3` is 3.12). Node,
 Typst and yq are pinned to exact versions with a SHA-256 per architecture,
-verified during the build. GraphViz, poppler-utils, jq and unzip come from the
+verified during the build. GraphViz, poppler-utils, jq, rsync and unzip come from the
 Ubuntu 24.04 archive, and Python 3.13 from the deadsnakes archive for Ubuntu. Each host builds the image for its local architecture;
 the tag in the runner configuration, such as `ci-job:4`, selects that image.
 
