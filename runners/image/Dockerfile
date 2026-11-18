@@ -5,7 +5,7 @@
 # runner's host provides, for linux/amd64 and linux/arm64.
 
 # Digest of the multi-arch index for act-24.04.
-FROM catthehacker/ubuntu:act-24.04@sha256:c58e2b364da03b0c804c7d660f2ecbedf2f221a382b9baa0b344b0144780ff43
+FROM catthehacker/ubuntu:act-24.04@sha256:51fdb5d2f9f4c747cf3966512cd691a090792517d77a22b33b928fad231ff790
 
 ARG TARGETARCH
 
