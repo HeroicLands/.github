@@ -48,6 +48,7 @@ function checkout({ repository = `git+${SITE}.git`, annotated = false, module = 
     mkdirSync(join(dir, "build/dist"), { recursive: true });
     writeFileSync(join(dir, "build/dist/module.json"), JSON.stringify(module, null, 2));
     writeFileSync(join(dir, "build/dist/module.zip"), Buffer.alloc(4096, 7));
+    writeFileSync(join(dir, "build/dist/module.zip.sha256"), `${digest(Buffer.alloc(4096, 7)).slice(7)}  module.zip\n`);
     writeFileSync(join(dir, "build/dist/scratch-metadata.jsonl"), '{"id":"a"}\n');
     writeFileSync(join(dir, "build/release-notes.md"), notes);
     return { dir, commit: git(dir, "rev-parse", "HEAD"), local: (path) => readFileSync(join(dir, path)) };
@@ -59,7 +60,7 @@ function checkout({ repository = `git+${SITE}.git`, annotated = false, module = 
  * responses. `ref.after` is how many polls answer 404 before the tag appears;
  * `ref.firstDelayMs` delays the first tag response.
  */
-async function github({ ref, releases = [], latest, freezeLatest = false, shortBy = 0, redirectTag } = {}) {
+async function github({ ref, publicCommit, returnedCommit = publicCommit, defaultCommit = "e".repeat(40), comparisonStatus = "behind", comparisonBase, comparisonMergeBase, privateRepository = false, defaultBranch = "main", missingDigest = false, createRace, refuseRef = false, releases = [], latest, freezeLatest = false, shortBy = 0, redirectTag } = {}) {
     const state = { requests: [], releases: [], nextId: 500, nextAsset: 9000, latest, polls: 0 };
     const template = fixture("github-release.json");
     state.release = (fields) => {
@@ -72,7 +73,7 @@ async function github({ ref, releases = [], latest, freezeLatest = false, shortB
     };
     state.asset = ({ name, bytes, state: assetState = "uploaded", size }) => {
         const a = structuredClone(template.assets[0]);
-        Object.assign(a, { id: state.nextAsset++, name, size: size ?? bytes.length, state: assetState, digest: digest(bytes) });
+        Object.assign(a, { id: state.nextAsset++, name, size: size ?? bytes.length, state: assetState, digest: missingDigest ? null : digest(bytes) });
         return a;
     };
     for (const r of releases) state.release(r);
@@ -85,7 +86,10 @@ async function github({ ref, releases = [], latest, freezeLatest = false, shortB
         const path = url.pathname;
         const record = { method: req.method, path, query: url.search, headers: req.headers };
         if (raw.length && !path.startsWith("/uploads/")) record.json = JSON.parse(raw);
-        if (path.startsWith("/uploads/")) record.length = raw.length;
+        if (path.startsWith("/uploads/")) {
+            record.length = raw.length;
+            record.bytes = raw;
+        }
         state.requests.push(record);
         const send = (status, json, headers = {}) => {
             res.writeHead(status, { "Content-Type": "application/json", ...headers });
@@ -94,6 +98,20 @@ async function github({ ref, releases = [], latest, freezeLatest = false, shortB
         const notFound = () => send(404, fixture("github-not-found.json"));
         const api = `/repos/${OWNER}/${REPO}`;
 
+        if (req.method === "GET" && path === `${api}/git/commits/${publicCommit}`) {
+            return send(200, { sha: returnedCommit });
+        }
+        if (req.method === "GET" && path === api) return send(200, { private: privateRepository, default_branch: defaultBranch });
+        if (req.method === "GET" && path === `${api}/git/ref/heads/${defaultBranch}`) return send(200, { ref: `refs/heads/${defaultBranch}`, object: { type: "commit", sha: defaultCommit } });
+        if (req.method === "GET" && path === `${api}/compare/${defaultCommit}...${publicCommit}`) return send(200, {
+            status: comparisonStatus, base_commit: { sha: comparisonBase ?? defaultCommit }, merge_base_commit: { sha: comparisonMergeBase ?? publicCommit },
+        });
+        if (req.method === "POST" && path === `${api}/git/refs`) {
+            if (createRace) ref = createRace;
+            if (ref || refuseRef) return send(422, { message: "Reference cannot be created" });
+            ref = { sha: record.json.sha };
+            return send(201, { ref: record.json.ref, object: { type: "commit", sha: ref.sha } });
+        }
         if (req.method === "GET" && path === `${api}/git/ref/tags/${TAG}`) {
             state.polls++;
             if (state.polls === 1 && ref?.firstDelayMs) {
@@ -102,12 +120,13 @@ async function github({ ref, releases = [], latest, freezeLatest = false, shortB
             if (!ref || state.polls <= (ref.after ?? 0)) return notFound();
             const body = structuredClone(fixture("github-ref-annotated.json"));
             body.ref = `refs/tags/${TAG}`;
-            body.object = ref.annotated ? { ...body.object, sha: "a".repeat(40), type: "tag" } : { ...body.object, sha: ref.sha, type: "commit" };
+            body.ref = ref.name ?? body.ref;
+            body.object = ref.annotated ? { ...body.object, sha: "a".repeat(40), type: "tag" } : { ...body.object, sha: ref.sha, type: ref.type ?? "commit" };
             return send(200, body);
         }
         if (req.method === "GET" && path === `${api}/git/tags/${"a".repeat(40)}`) {
             const body = structuredClone(fixture("github-tag-object.json"));
-            body.object = { ...body.object, sha: ref.sha, type: "commit" };
+            body.object = { ...body.object, sha: ref.sha, type: ref.type ?? "commit" };
             return send(200, body);
         }
         if (req.method === "GET" && path === `${api}/releases/tags/${TAG}`) {
@@ -451,4 +470,275 @@ test("inputs that cannot be right stop the run before any request", async () => 
         assert.match(out.stderr, pattern);
         assert.deepEqual(fake.requests, []);
     }
+});
+
+const PUBLIC_COMMIT = "c".repeat(40);
+const artifactMode = { RELEASE_TARGET_MODE: "artifact", RELEASE_PUBLIC_TARGET_SHA: PUBLIC_COMMIT,
+    RELEASE_FILES: "build/dist/module.zip\nbuild/dist/module.zip.sha256" };
+const artifactBuilt = (c) => [
+    { name: "module.zip", bytes: c.local("build/dist/module.zip") },
+    { name: "module.zip.sha256", bytes: c.local("build/dist/module.zip.sha256") },
+];
+
+test("artifact mode creates only a public target ref and publishes the exact ZIP and checksum bytes idempotently", async () => {
+    const c = checkout();
+    assert.notEqual(c.commit, PUBLIC_COMMIT);
+    const checksum = Buffer.from(`${digest(c.local("build/dist/module.zip")).slice(7)}  module.zip\n`);
+    writeFileSync(join(c.dir, "build/dist/module.zip.sha256"), checksum);
+    const trace = join(c.dir, "git-trace.log");
+    const env = { ...artifactMode, RELEASE_FILES: "build/dist/module.zip\nbuild/dist/module.zip.sha256", GIT_TRACE: trace };
+    const fake = await github({ publicCommit: PUBLIC_COMMIT });
+    const out = await run(c.dir, fake, env);
+    assert.equal(out.status, 0, out.stderr);
+    const gitRequests = fake.requests.filter((r) => r.path.includes("/git/"));
+    assert.equal(gitRequests[0].path, `/repos/${OWNER}/${REPO}/git/commits/${PUBLIC_COMMIT}`);
+    assert.deepEqual(gitRequests.filter((r) => r.method !== "GET").map((r) => [r.method, r.path, r.json]), [
+        ["POST", `/repos/${OWNER}/${REPO}/git/refs`, { ref: `refs/tags/${TAG}`, sha: PUBLIC_COMMIT }],
+    ]);
+    assert.ok(!fake.requests.some((r) => JSON.stringify(r.json ?? {}).includes(c.commit)));
+    const uploads = fake.writes().filter((r) => r.path.startsWith("/uploads/"));
+    assert.deepEqual(uploads.map((r) => [r.query, r.bytes]), [
+        ["?name=module.zip", c.local("build/dist/module.zip")],
+        ["?name=module.zip.sha256", checksum],
+    ]);
+    assert.deepEqual(fake.releases[0].assets.map((a) => a.name), ["module.zip", "module.zip.sha256"]);
+    assert.equal(fake.writes().find((r) => r.path.endsWith("/releases")).json.target_commitish, PUBLIC_COMMIT);
+    assert.ok(!out.stdout.includes("gh-token") && !out.stderr.includes("gh-token"));
+    const writes = fake.writes().length;
+    const repeat = await run(c.dir, fake, env);
+    assert.equal(repeat.status, 0, repeat.stderr);
+    assert.equal(fake.writes().length, writes);
+    assert.match(repeat.stdout, /already published/);
+    const commands = readFileSync(trace, "utf8").trim().split("\n");
+    assert.equal(commands.length, 2);
+    assert.ok(commands.every((line) => /built-in: git rev-parse --verify --quiet /.test(line) && line.includes(`refs/tags/${TAG}^{commit}`)));
+});
+
+for (const annotated of [false, true]) {
+    test(`artifact mode accepts an existing ${annotated ? "annotated" : "lightweight"} tag only at the public target`, async () => {
+        const c = checkout();
+        const fake = await github({ publicCommit: PUBLIC_COMMIT, ref: { sha: PUBLIC_COMMIT, annotated } });
+        const out = await run(c.dir, fake, artifactMode);
+        assert.equal(out.status, 0, out.stderr);
+        assert.ok(!fake.writes().some((r) => r.path.includes("/git/")));
+    });
+    test(`artifact mode refuses an existing conflicting ${annotated ? "annotated" : "lightweight"} tag`, async () => {
+        const c = checkout();
+        const fake = await github({ publicCommit: PUBLIC_COMMIT, ref: { sha: c.commit, annotated } });
+        const out = await run(c.dir, fake, artifactMode);
+        assert.equal(out.status, 1);
+        assert.match(out.stderr, /not public-target-sha.*never overwritten/);
+        assert.deepEqual(fake.writes(), []);
+    });
+}
+
+for (const ref of [{ sha: PUBLIC_COMMIT, type: "tree" }, { sha: PUBLIC_COMMIT, name: `refs/tags/${TAG}-other` }, { sha: "a".repeat(40), annotated: true, type: "tag" }]) {
+    test(`artifact mode refuses a tag with an ambiguous or non-commit object ${JSON.stringify(ref)}`, async () => {
+        const c = checkout();
+        const fake = await github({ publicCommit: PUBLIC_COMMIT, ref });
+        const out = await run(c.dir, fake, artifactMode);
+        assert.equal(out.status, 1);
+        assert.match(out.stderr, /not a commit|does not identify the exact requested tag/);
+        assert.deepEqual(fake.writes(), []);
+    });
+}
+
+for (const publicCommit of [undefined, PUBLIC_COMMIT]) {
+    test(`artifact mode refuses a ${publicCommit ? "mismatched" : "missing"} public commit before writing`, async () => {
+        const c = checkout();
+        const fake = await github({ publicCommit, returnedCommit: "d".repeat(40) });
+        const out = await run(c.dir, fake, artifactMode);
+        assert.equal(out.status, 1);
+        assert.match(out.stderr, /^public-target-sha: error: .*not a verified commit/m);
+        assert.deepEqual(fake.writes(), []);
+        assert.equal(fake.requests.length, 1);
+    });
+}
+
+for (const env of [
+    { RELEASE_TARGET_MODE: "artifact" },
+    { ...artifactMode, RELEASE_PUBLIC_TARGET_SHA: "main" },
+    { ...artifactMode, RELEASE_PUBLIC_TARGET_SHA: PUBLIC_COMMIT.slice(0, 12) },
+    { ...artifactMode, RELEASE_PUBLIC_TARGET_SHA: ` ${PUBLIC_COMMIT}` },
+    { ...artifactMode, RELEASE_TARGET_MODE: "automatic" },
+    { RELEASE_PUBLIC_TARGET_SHA: PUBLIC_COMMIT },
+]) {
+    test(`invalid artifact input stops before HTTP: ${JSON.stringify(env)}`, async () => {
+        const c = checkout();
+        const fake = await github();
+        const out = await run(c.dir, fake, env);
+        assert.equal(out.status, 1);
+        assert.match(out.stderr, /^(public-target-sha|target-mode): error:/m);
+        assert.deepEqual(fake.requests, []);
+    });
+}
+
+for (const sha of [PUBLIC_COMMIT, "d".repeat(40)]) {
+    test(`a concurrent tag creator is accepted only at the explicit public target ${sha}`, async () => {
+        const c = checkout();
+        const fake = await github({ publicCommit: PUBLIC_COMMIT, createRace: { sha } });
+        const out = await run(c.dir, fake, artifactMode);
+        assert.equal(out.status, sha === PUBLIC_COMMIT ? 0 : 1, out.stderr);
+        const writes = fake.writes();
+        assert.equal(writes[0].path, `/repos/${OWNER}/${REPO}/git/refs`);
+        assert.equal(writes.filter((r) => r.path.includes("/git/")).length, 1);
+        if (sha !== PUBLIC_COMMIT) {
+            assert.match(out.stderr, /never overwritten/);
+            assert.equal(writes.length, 1);
+        }
+    });
+}
+
+test("a rejected public tag creation with no competing tag fails clearly", async () => {
+    const c = checkout();
+    const fake = await github({ publicCommit: PUBLIC_COMMIT, refuseRef: true });
+    const out = await run(c.dir, fake, artifactMode);
+    assert.equal(out.status, 1);
+    assert.match(out.stderr, /refused to create the public target tag and no tag exists/);
+    assert.equal(fake.writes().length, 1);
+    assert.equal(fake.releases.length, 0);
+});
+
+test("artifact mode still requires the local source release tag", async () => {
+    const c = checkout();
+    git(c.dir, "tag", "-d", TAG);
+    const fake = await github({ publicCommit: PUBLIC_COMMIT });
+    const out = await run(c.dir, fake, artifactMode);
+    assert.equal(out.status, 1);
+    assert.match(out.stderr, /not a tag in this checkout/);
+    assert.deepEqual(fake.requests, []);
+});
+
+test("artifact mode reuses a draft and retains the upload validation gate", async () => {
+    const c = checkout();
+    const fake = await github({
+        publicCommit: PUBLIC_COMMIT,
+        ref: { sha: PUBLIC_COMMIT },
+        shortBy: 1,
+        releases: [{ id: 77, tag_name: TAG, draft: true, assets: [{ name: "stale.zip", bytes: Buffer.from("stale") }] }],
+    });
+    const out = await run(c.dir, fake, artifactMode);
+    assert.equal(out.status, 1);
+    assert.match(out.stderr, /draft's assets do not match after upload/);
+    assert.equal(fake.releases[0].draft, true);
+    assert.ok(fake.writes().some((r) => r.method === "DELETE"));
+    assert.ok(!fake.writes().some((r) => r.path.endsWith("/releases")));
+    assert.ok(!fake.writes().some((r) => r.json?.draft === false));
+});
+
+test("artifact mode refuses changed published bytes without editing the release", async () => {
+    const c = checkout();
+    const altered = artifactBuilt(c);
+    altered[0] = { name: "module.zip", bytes: Buffer.alloc(4096, 8) };
+    const fake = await github({
+        publicCommit: PUBLIC_COMMIT,
+        ref: { sha: PUBLIC_COMMIT },
+        latest: TAG,
+        releases: [{ id: 42, tag_name: TAG, draft: false, assets: altered }],
+    });
+    const out = await run(c.dir, fake, artifactMode);
+    assert.equal(out.status, 1);
+    assert.match(out.stderr, /module\.zip has digest sha256:[0-9a-f]+, not sha256:/);
+    assert.deepEqual(fake.writes(), []);
+});
+
+
+for (const [label, patterns, change] of [
+    ["missing listed ZIP", "build/dist/missing.zip\nbuild/dist/module.zip.sha256"],
+    ["missing listed checksum", "build/dist/module.zip\nbuild/dist/missing.zip.sha256"],
+    ["unmatched extra glob", `${artifactMode.RELEASE_FILES}\nbuild/dist/*.pdf`],
+    ["ZIP only", "build/dist/module.zip"],
+    ["checksum only", "build/dist/module.zip.sha256"],
+    ["wrong ZIP name", artifactMode.RELEASE_FILES, (text) => text.replace("module.zip", "other.zip")],
+    ["wrong digest", artifactMode.RELEASE_FILES, (text) => "0".repeat(64) + text.slice(64)],
+    ["truncated checksum", artifactMode.RELEASE_FILES, (text) => text.slice(0, -1)],
+    ["uppercase digest", artifactMode.RELEASE_FILES, (text) => "A".repeat(64) + text.slice(64)],
+    ["one separator space", artifactMode.RELEASE_FILES, (text) => text.replace("  ", " ")],
+    ["CRLF", artifactMode.RELEASE_FILES, (text) => text.replace("\n", "\r\n")],
+    ["extra newline", artifactMode.RELEASE_FILES, (text) => text + "\n"],
+    ["unsafe name", artifactMode.RELEASE_FILES, (text) => text.replace("module.zip", "../module.zip")],
+]) {
+    test(`artifact preflight refuses ${label} before any HTTP request`, async () => {
+        const c = checkout();
+        if (change) writeFileSync(join(c.dir, "build/dist/module.zip.sha256"), change(c.local("build/dist/module.zip.sha256").toString("utf8")));
+        const fake = await github({ publicCommit: PUBLIC_COMMIT });
+        const out = await run(c.dir, fake, { ...artifactMode, RELEASE_FILES: patterns });
+        assert.equal(out.status, 1, out.stdout);
+        assert.match(out.stderr, /matches no file|matching ZIP|same-name \.sha256|must contain lowercase|names other\.zip|digest does not match/);
+        assert.deepEqual(fake.requests, []);
+    });
+}
+
+test("artifact mode validates every ZIP pair and permits additional non-ZIP assets", async () => {
+    const c = checkout();
+    const second = Buffer.from("another complete ZIP");
+    writeFileSync(join(c.dir, "build/dist/second.zip"), second);
+    writeFileSync(join(c.dir, "build/dist/second.zip.sha256"), `${digest(second).slice(7)}  second.zip\n`);
+    const patterns = `${artifactMode.RELEASE_FILES}\nbuild/dist/second.zip\nbuild/dist/second.zip.sha256\nbuild/dist/scratch-metadata.jsonl`;
+    const fake = await github({ publicCommit: PUBLIC_COMMIT });
+    const out = await run(c.dir, fake, { ...artifactMode, RELEASE_FILES: patterns });
+    assert.equal(out.status, 0, out.stderr);
+    assert.equal(fake.releases[0].assets.length, 5);
+    writeFileSync(join(c.dir, "build/dist/second.zip.sha256"), `${"0".repeat(64)}  second.zip\n`);
+    const broken = await github({ publicCommit: PUBLIC_COMMIT });
+    const refused = await run(c.dir, broken, { ...artifactMode, RELEASE_FILES: patterns });
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /second\.zip\.sha256: error: digest does not match second\.zip/);
+    assert.deepEqual(broken.requests, []);
+});
+
+for (const [comparisonStatus, defaultCommit] of [["identical", PUBLIC_COMMIT], ["behind", "e".repeat(40)]]) {
+    test(`artifact target comparison accepts ${comparisonStatus} with a verified default branch base`, async () => {
+        const c = checkout();
+        const fake = await github({ publicCommit: PUBLIC_COMMIT, defaultCommit, comparisonStatus });
+        const out = await run(c.dir, fake, artifactMode);
+        assert.equal(out.status, 0, out.stderr);
+        const comparison = fake.requests.find((r) => r.path.includes("/compare/"));
+        assert.equal(comparison.path, `/repos/${OWNER}/${REPO}/compare/${defaultCommit}...${PUBLIC_COMMIT}`);
+        assert.ok(fake.requests.indexOf(comparison) < fake.requests.indexOf(fake.writes()[0]));
+    });
+}
+
+for (const options of [
+    { comparisonStatus: "ahead" },
+    { comparisonStatus: "diverged" },
+    { comparisonStatus: "unknown" },
+    { comparisonBase: "f".repeat(40) },
+    { comparisonMergeBase: "f".repeat(40) },
+    { privateRepository: true },
+    { defaultBranch: "" },
+    { defaultCommit: "1234" },
+]) {
+    test(`artifact target refuses unproved default-branch reachability ${JSON.stringify(options)}`, async () => {
+        const c = checkout();
+        const fake = await github({ publicCommit: PUBLIC_COMMIT, ...options });
+        const out = await run(c.dir, fake, artifactMode);
+        assert.equal(out.status, 1);
+        assert.match(out.stderr, /not reachable from the public default branch|requires a public repository|default branch does not resolve/);
+        assert.deepEqual(fake.writes(), []);
+        assert.ok(!fake.requests.some((r) => r.path.includes("/releases")));
+    });
+}
+
+for (const published of [false, true]) {
+    test(`artifact release requires server SHA-256 digests ${published ? "on repeat publication" : "after upload"}`, async () => {
+        const c = checkout();
+        const fake = await github({
+            publicCommit: PUBLIC_COMMIT, ref: { sha: PUBLIC_COMMIT }, missingDigest: true,
+            ...(published ? { latest: TAG, releases: [{ id: 42, tag_name: TAG, draft: false, assets: artifactBuilt(c) }] } : {}),
+        });
+        const out = await run(c.dir, fake, artifactMode);
+        assert.equal(out.status, 1);
+        assert.match(out.stderr, /has no SHA-256 digest/);
+        if (published) assert.deepEqual(fake.writes(), []);
+        else assert.ok(fake.releases[0].draft && !fake.writes().some((r) => r.json?.draft === false));
+    });
+}
+
+test("mirrored callers retain optional globs and the legacy missing-digest behavior", async () => {
+    const c = checkout();
+    const fake = await github({ ref: { sha: c.commit }, missingDigest: true });
+    const out = await run(c.dir, fake);
+    assert.equal(out.status, 0, out.stderr);
+    assert.ok(!fake.requests.some((r) => r.path.includes("/compare/") || r.path.includes("/git/commits/")));
 });

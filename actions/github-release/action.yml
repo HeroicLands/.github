@@ -1,11 +1,12 @@
-name: GitHub Release from a mirrored tag
+name: GitHub Release from a verified tag
 description: >-
   Wait until the push mirror has delivered a tag to GitHub at the commit it
   names in this checkout, then create the GitHub Release as a draft, upload and
   check every asset, and publish it with prerelease and make_latest set
-  explicitly. A release meant to be Latest is proved to be served by
-  releases/latest/download. Never writes a git ref on GitHub, and never edits a
-  published release. The repository is read from package.json.
+  explicitly. Artifact mode instead verifies an explicit public commit and
+  creates only a missing tag at it without transferring source history. A
+  release meant to be Latest is proved to be served by releases/latest/download.
+  Never edits a published release. The repository is read from package.json.
 
 inputs:
   token:
@@ -16,9 +17,25 @@ inputs:
     required: true
   tag:
     description: >-
-      The tag to release. It must exist in this checkout; its commit is the one
-      GitHub's copy must name.
+      The tag to release. It must exist in this checkout. Mirrored mode requires
+      GitHub's copy to name its commit; artifact mode uses public-target-sha.
     required: true
+  target-mode:
+    description: >-
+      mirrored waits for GitHub's tag to match the local commit. artifact
+      requires public-target-sha and creates a missing tag at that verified
+      GitHub commit. An existing conflicting tag is never overwritten.
+    required: false
+    default: mirrored
+  public-target-sha:
+    description: >-
+      Required in artifact mode: the full 40-character commit SHA already
+      reachable from the public default branch of the GitHub repository named
+      by package.json. Branch names, short SHAs, missing and fork-only commits
+      are refused. Forbidden in mirrored mode. Artifact mode requires a
+      repository without a push mirror.
+    required: false
+    default: ""
   name:
     description: The release title. Empty means the tag.
     required: false
@@ -38,10 +55,13 @@ inputs:
   files:
     description: >-
       Newline-separated globs of the files to attach, relative to the working
-      directory. A glob matching nothing is not an error; no file at all is.
+      directory. Mirrored mode permits unmatched globs. Artifact mode requires
+      every pattern to match a file and every ZIP to have its exact same-name
+      .sha256 companion with a verified digest. Other asset types are allowed.
+      No file at all is an error in either mode.
     required: true
   wait-seconds:
-    description: How long to wait for the mirror to deliver the tag.
+    description: How long to wait for tag visibility after mirror delivery or artifact tag creation.
     required: false
     default: "900"
   poll-seconds:
@@ -78,6 +98,8 @@ runs:
       env:
         RELEASE_TOKEN: ${{ inputs.token }}
         RELEASE_TAG: ${{ inputs.tag }}
+        RELEASE_TARGET_MODE: ${{ inputs.target-mode }}
+        RELEASE_PUBLIC_TARGET_SHA: ${{ inputs.public-target-sha }}
         RELEASE_NAME: ${{ inputs.name }}
         RELEASE_BODY_PATH: ${{ inputs.body-path }}
         RELEASE_PRERELEASE: ${{ inputs.prerelease }}

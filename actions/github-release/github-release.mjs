@@ -5,12 +5,12 @@
  */
 
 /**
- * Publish the GitHub Release for a tag the push mirror delivers.
+ * Publish the GitHub Release for a mirrored or explicit public target tag.
  *
- * The job runs on another forge, which owns the tag; the mirror is the only
- * writer of GitHub's refs. So this waits until GitHub has the tag at the
- * commit it names here, then makes the Release as a draft, uploads and checks
- * every asset, and publishes it with `prerelease` and `make_latest` stated
+ * Mirrored mode waits for GitHub's tag to name the local commit. Artifact
+ * mode verifies an explicit commit already on GitHub and creates a missing
+ * tag there without transferring source history. Both make a draft, upload
+ * and check every asset, and publish it with `prerelease` and `make_latest` stated
  * explicitly. A draft is invisible to `releases/latest`, so no installed copy
  * can fetch a release whose assets are still uploading. A published release
  * is never edited: one that already matches is a success, one that differs is
@@ -75,18 +75,21 @@ export function contentType(name) {
 
 /**
  * The files to attach: every match of each newline-separated glob. A glob
- * matching nothing is not an error; no file at all, an empty file, two files
- * with one name, or a name GitHub would rewrite is.
+ * matching nothing is allowed unless strict selection is requested. No file
+ * at all, an empty file, two files with one name, or a rewritten name fails.
  *
  * @param {string} patterns newline-separated globs, relative to the working directory
+ * @param {{strict?: boolean}} options require each pattern to match a file
  * @returns {{path: string, name: string, size: number}[]}
  */
-export function assetFiles(patterns) {
+export function assetFiles(patterns, { strict = false } = {}) {
     const paths = new Set();
     for (const pattern of patterns.split("\n").map((p) => p.trim()).filter(Boolean)) {
-        for (const path of globSync(pattern).sort()) {
-            if (statSync(path).isFile()) paths.add(path);
+        const matches = globSync(pattern).sort().filter((path) => statSync(path).isFile());
+        if (strict && matches.length === 0) {
+            throw new Finding("files", `artifact file pattern ${JSON.stringify(pattern)} matches no file`);
         }
+        for (const path of matches) paths.add(path);
     }
     const files = [];
     const names = new Map();
@@ -107,6 +110,24 @@ export function assetFiles(patterns) {
         throw new Finding("files", `no file matches ${JSON.stringify(patterns.trim())}; a release with no assets installs nothing`);
     }
     return files;
+}
+
+/** Require complete ZIP/checksum pairs and validate their bytes before HTTP. */
+function checkArtifactChecksums(files) {
+    const byName = new Map(files.map((file) => [file.name, file]));
+    for (const file of files) {
+        if (file.name.toLowerCase().endsWith(".zip.sha256") && !byName.has(file.name.slice(0, -7))) {
+            throw new Finding(file.path, "has no matching ZIP among the release files");
+        }
+        if (!file.name.toLowerCase().endsWith(".zip")) continue;
+        const checksum = byName.get(`${file.name}.sha256`);
+        if (!checksum) throw new Finding(file.path, "has no same-name .sha256 companion among the release files");
+        const line = readFileSync(checksum.path, "utf8");
+        const match = /^([0-9a-f]{64})  ([A-Za-z0-9._+-]+)\n$/.exec(line);
+        if (!match || match[0] !== line) throw new Finding(checksum.path, "must contain lowercase SHA-256, two spaces, the ZIP filename and one LF");
+        if (match[2] !== file.name) throw new Finding(checksum.path, `names ${match[2]}, not ${file.name}`);
+        if (`sha256:${match[1]}` !== file.digest) throw new Finding(checksum.path, `digest does not match ${file.name}`);
+    }
 }
 
 /**
@@ -161,9 +182,10 @@ export function checkManifests(files, repoUrl, tag) {
  *
  * @param {{name: string, size: number, digest?: string}[]} files
  * @param {{name: string, size: number, state?: string, digest?: string | null}[]} assets
+ * @param {{requireDigest?: boolean}} options refuse assets with no reported digest
  * @returns {string[]} one line per difference, empty when they match
  */
-export function assetDifferences(files, assets) {
+export function assetDifferences(files, assets, { requireDigest = false } = {}) {
     const byName = new Map(assets.map((a) => [a.name, a]));
     const wanted = new Set(files.map((f) => f.name));
     const out = [];
@@ -172,6 +194,7 @@ export function assetDifferences(files, assets) {
         if (!asset) out.push(`${file.name} is missing`);
         else if (asset.state && asset.state !== "uploaded") out.push(`${file.name} is ${asset.state}, not uploaded`);
         else if (asset.size !== file.size) out.push(`${file.name} is ${asset.size} bytes, not ${file.size}`);
+        else if (requireDigest && !asset.digest) out.push(`${file.name} has no SHA-256 digest; artifact bytes cannot be verified`);
         else if (file.digest && asset.digest && asset.digest !== file.digest) out.push(`${file.name} has digest ${asset.digest}, not ${file.digest}`);
     }
     for (const asset of assets) if (!wanted.has(asset.name)) out.push(`${asset.name} is not one of this release's files`);
@@ -260,12 +283,15 @@ function localCommit(tag) {
  * Wait until GitHub has the tag, then require that it names `expected`. An
  * annotated tag is followed to its commit.
  */
-async function awaitTag(api, { owner, repo }, tag, expected, { waitSeconds, pollSeconds }) {
+async function awaitTag(api, { owner, repo }, tag, expected, { waitSeconds, pollSeconds, targetMode }) {
     const address = `repos/${owner}/${repo}/git/ref/tags/${tag}`;
     const deadline = Date.now() + waitSeconds * 1000;
     for (let attempt = 1; ; attempt++) {
         const res = await api("GET", `/repos/${owner}/${repo}/git/ref/tags/${segments(tag)}`, { accept: [404] });
         if (res.status === 200) {
+            if (res.body?.ref !== `refs/tags/${tag}`) {
+                throw new Finding(address, "does not identify the exact requested tag");
+            }
             let object = res.body?.object;
             for (let depth = 0; object?.type === "tag" && depth < 8; depth++) {
                 object = (await api("GET", `/repos/${owner}/${repo}/git/tags/${object.sha}`)).body?.object;
@@ -276,8 +302,10 @@ async function awaitTag(api, { owner, repo }, tag, expected, { waitSeconds, poll
             if (object.sha !== expected) {
                 throw new Finding(
                     address,
-                    `names commit ${object.sha} on GitHub, but ${tag} is ${expected} here. ` +
-                        "The mirror delivered a different tag; no release is attached to it",
+                    targetMode === "artifact"
+                        ? `names commit ${object.sha} on GitHub, not public-target-sha ${expected}; the tag is never overwritten`
+                        : `names commit ${object.sha} on GitHub, but ${tag} is ${expected} here. ` +
+                          "The mirror delivered a different tag; no release is attached to it",
                 );
             }
             console.log(`github-release: ${tag} is on GitHub at ${expected.slice(0, 7)} (poll ${attempt}).`);
@@ -286,11 +314,55 @@ async function awaitTag(api, { owner, repo }, tag, expected, { waitSeconds, poll
         if (Date.now() + pollSeconds * 1000 > deadline) {
             throw new Finding(
                 address,
-                `the push mirror has not delivered ${tag} to GitHub after ${waitSeconds} s; re-run once it has`,
+                targetMode === "artifact"
+                    ? `the public target tag ${tag} is absent after ${waitSeconds} s; re-run to verify or create it`
+                    : `the push mirror has not delivered ${tag} to GitHub after ${waitSeconds} s; re-run once it has`,
             );
         }
         await sleep(pollSeconds);
     }
+}
+
+/** Verify an existing public commit and create only a missing tag at it. */
+async function artifactTag(api, target, tag, expected, settings) {
+    const base = `/repos/${target.owner}/${target.repo}`;
+    const commit = await api("GET", `${base}/git/commits/${expected}`, { accept: [404] });
+    if (commit.status === 404 || commit.body?.sha !== expected) {
+        throw new Finding(
+            "public-target-sha",
+            `${expected} is not a verified commit in ${target.owner}/${target.repo}; supply a full commit SHA already present there`,
+        );
+    }
+    const repository = (await api("GET", base)).body;
+    if (repository?.private !== false || typeof repository.default_branch !== "string" || !repository.default_branch) {
+        throw new Finding("public-target-sha", "requires a public repository with a default branch");
+    }
+    const branch = (await api("GET", `${base}/git/ref/heads/${segments(repository.default_branch)}`)).body;
+    const head = branch?.object?.sha;
+    if (branch?.ref !== `refs/heads/${repository.default_branch}` || branch?.object?.type !== "commit" || !/^[0-9a-f]{40}$/.test(head ?? "")) {
+        throw new Finding("public-target-sha", "the public default branch does not resolve to a full commit SHA");
+    }
+    const comparison = (await api("GET", `${base}/compare/${head}...${expected}`)).body;
+    if (!["identical", "behind"].includes(comparison?.status) ||
+        comparison.base_commit?.sha !== head || comparison.merge_base_commit?.sha !== expected) {
+        throw new Finding("public-target-sha", `${expected} is not reachable from the public default branch; a fork-only or divergent commit cannot be released`);
+    }
+    const ref = await api("GET", `${base}/git/ref/tags/${segments(tag)}`, { accept: [404] });
+    if (ref.status === 404) {
+        // A concurrent publisher can create the ref first. Read it back and
+        // check its peeled commit; a conflict never permits a ref update.
+        const created = await api("POST", `${base}/git/refs`, {
+            json: { ref: `refs/tags/${tag}`, sha: expected },
+            accept: [422],
+        });
+        if (created.status === 422) {
+            const current = await api("GET", `${base}/git/ref/tags/${segments(tag)}`, { accept: [404] });
+            if (current.status === 404) {
+                throw new Finding(base.slice(1) + "/git/refs", "GitHub refused to create the public target tag and no tag exists; check the repository's tag rules");
+            }
+        }
+    }
+    await awaitTag(api, target, tag, expected, settings);
 }
 
 /**
@@ -369,6 +441,17 @@ function settings(env) {
     if (!env.RELEASE_TOKEN) {
         throw new Finding("token", "no token supplied. Pass the GitHub token with Contents read and write on the repository");
     }
+    const targetMode = env.RELEASE_TARGET_MODE || "mirrored";
+    const publicTargetSha = env.RELEASE_PUBLIC_TARGET_SHA ?? "";
+    if (!["mirrored", "artifact"].includes(targetMode)) {
+        throw new Finding("target-mode", 'must be "mirrored" or "artifact"');
+    }
+    if (targetMode === "artifact" && !/^[0-9a-f]{40}$/i.test(publicTargetSha)) {
+        throw new Finding("public-target-sha", "artifact mode requires a full 40-character commit SHA already present in the GitHub repository");
+    }
+    if (targetMode === "mirrored" && publicTargetSha !== "") {
+        throw new Finding("public-target-sha", "requires target-mode: artifact; mirrored mode uses the local tag's commit");
+    }
     const prerelease = bool("prerelease", env.RELEASE_PRERELEASE);
     const makeLatest = bool("make-latest", env.RELEASE_MAKE_LATEST);
     if (prerelease && makeLatest) {
@@ -377,6 +460,8 @@ function settings(env) {
     const trim = (url, fallback) => (url || fallback).replace(/\/+$/, "");
     return {
         tag,
+        targetMode,
+        publicTargetSha: publicTargetSha.toLowerCase(),
         token: env.RELEASE_TOKEN,
         name: env.RELEASE_NAME || tag,
         bodyPath: env.RELEASE_BODY_PATH ?? "",
@@ -411,12 +496,13 @@ export async function main(env = process.env) {
     const pkg = JSON.parse(readFileSync("package.json", "utf8"));
     const target = githubRepository(pkg.repository);
     const { owner, repo } = target;
-    const files = assetFiles(s.files);
+    const files = assetFiles(s.files, { strict: s.targetMode === "artifact" });
     const manifests = checkManifests(files, target.url, s.tag);
     const body = releaseBody(s.bodyPath);
     for (const file of files) {
         file.digest = `sha256:${createHash("sha256").update(readFileSync(file.path)).digest("hex")}`;
     }
+    if (s.targetMode === "artifact") checkArtifactChecksums(files);
     console.log(
         `github-release: ${s.tag} for ${owner}/${repo} with ${files.length} asset(s)` +
             (manifests ? `, ${manifests} manifest(s) checked.` : "."),
@@ -424,7 +510,11 @@ export async function main(env = process.env) {
 
     const api = client(s);
     const expected = localCommit(s.tag);
-    await awaitTag(api, target, s.tag, expected, s);
+    if (s.targetMode === "artifact") {
+        await artifactTag(api, target, s.tag, s.publicTargetSha, s);
+    } else {
+        await awaitTag(api, target, s.tag, expected, s);
+    }
 
     const finish = async (release) => {
         if (s.makeLatest) {
@@ -446,7 +536,7 @@ export async function main(env = process.env) {
     if (published.status === 200 && published.body?.draft === false) {
         const release = published.body;
         const assets = await api.list(`/repos/${owner}/${repo}/releases/${release.id}/assets`);
-        const differences = assetDifferences(files, assets);
+        const differences = assetDifferences(files, assets, { requireDigest: s.targetMode === "artifact" });
         if (release.prerelease !== s.prerelease) {
             differences.push(`it is ${release.prerelease ? "" : "not "}a prerelease, and prerelease is ${s.prerelease}`);
         }
@@ -476,7 +566,14 @@ export async function main(env = process.env) {
         release = (await api("PATCH", `/repos/${owner}/${repo}/releases/${release.id}`, { json: { ...fields, draft: true } })).body;
         console.log(`github-release: reusing draft ${release.id}.`);
     } else {
-        release = (await api("POST", `/repos/${owner}/${repo}/releases`, { json: { tag_name: s.tag, ...fields, draft: true } })).body;
+        release = (await api("POST", `/repos/${owner}/${repo}/releases`, {
+            json: {
+                tag_name: s.tag,
+                ...(s.targetMode === "artifact" ? { target_commitish: s.publicTargetSha } : {}),
+                ...fields,
+                draft: true,
+            },
+        })).body;
         console.log(`github-release: created draft ${release.id}.`);
     }
 
@@ -495,7 +592,7 @@ export async function main(env = process.env) {
     }
 
     const uploaded = await api.list(`/repos/${owner}/${repo}/releases/${release.id}/assets`);
-    const differences = assetDifferences(files, uploaded);
+    const differences = assetDifferences(files, uploaded, { requireDigest: s.targetMode === "artifact" });
     if (differences.length) {
         throw new Finding(
             `repos/${owner}/${repo}/releases/${release.id}/assets`,

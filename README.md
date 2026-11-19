@@ -1348,15 +1348,18 @@ that one tag to the checkout's remote, with the checkout's credentials.
 
 ## `actions/github-release`
 
-Publishes the GitHub Release for a tag that another forge owns and the push
-mirror delivers. The job never writes a git ref on GitHub; the mirror is the
-only writer of GitHub's refs.
+Publishes the GitHub Release for a tag that another forge owns. The default
+`mirrored` mode waits for the push mirror and requires GitHub's tag to name the
+same commit as the local tag. The explicit `artifact` mode publishes built
+files against a verified commit already in the public GitHub repository. It
+creates a missing version tag at that public commit without transferring git
+objects or source history.
 
 ```yaml
 # a step in the release job, after the tag is pushed to the forge and the
 # assets are built
 - name: Publish the GitHub Release
-  uses: HeroicLands/.github/actions/github-release@main
+  uses: HeroicLands/.github/actions/github-release@b60f4508cb7d90af4bfecc69c0cd76f73c20ac9e
   with:
     token: ${{ secrets.GH_RELEASE_TOKEN }}
     tag: ${{ steps.decide.outputs.tag }}
@@ -1375,12 +1378,14 @@ only writer of GitHub's refs.
 | --- | --- | --- |
 | `token` | — | a GitHub token with Contents read and write on the release repository |
 | `tag` | — | the tag to release; it must exist in the checkout |
+| `target-mode` | `mirrored` | `mirrored` requires the local tag's commit; `artifact` requires an explicit public commit |
+| `public-target-sha` | none | full 40-character commit SHA reachable from the public default branch; required in artifact mode, forbidden in mirrored mode |
 | `name` | the tag | the release title |
 | `body-path` | none | the release notes; at most 125,000 characters |
 | `prerelease` | — | the literal `true` or `false` |
 | `make-latest` | — | the literal `true` or `false`; `true` with `prerelease: true` is refused |
-| `files` | — | newline-separated globs; a glob matching nothing is not an error, no file at all is |
-| `wait-seconds` | `900` | how long to wait for the mirror to deliver the tag |
+| `files` | — | newline-separated globs; mirrored mode permits unmatched globs, artifact mode requires every pattern to match and complete ZIP/checksum pairs |
+| `wait-seconds` | `900` | how long to wait for tag visibility after mirror delivery or artifact tag creation |
 | `poll-seconds` | `15` | the pause between checks for the tag, and for Latest |
 | `api-url` | `https://api.github.com` | |
 | `uploads-url` | `https://uploads.github.com` | |
@@ -1397,6 +1402,69 @@ only writer of GitHub's refs.
 `manifest`, `download` and `flags.metadataUrl` derive from that field, so a
 release made anywhere else leaves every installed copy pointing at nothing.
 
+**Artifact releases from private source.** Use artifact mode only for a public
+repository without a push mirror; a mirror's ownership of refs conflicts with
+artifact tags. Pin the shared action to a reviewed full commit SHA. The public
+repository can contain
+only README and LICENSE while the private forge repository builds the release
+ZIP. Keep the private repository's git and LFS objects out of the public
+repository. Set `package.json#repository.url` to the public release repository,
+and supply its approved full commit SHA explicitly. For example,
+`ART_PUBLIC_TARGET_SHA` holds a commit from the public repository's default
+branch; its value is a full SHA, not a branch name:
+
+```yaml
+- name: Publish the artwork release
+  uses: HeroicLands/.github/actions/github-release@b60f4508cb7d90af4bfecc69c0cd76f73c20ac9e
+  with:
+    token: ${{ secrets.GH_RELEASE_TOKEN }}
+    tag: ${{ steps.decide.outputs.tag }}
+    target-mode: artifact
+    public-target-sha: ${{ vars.ART_PUBLIC_TARGET_SHA }}
+    body-path: build/release-notes.md
+    prerelease: "false"
+    make-latest: "true"
+    files: |
+      build/dist/originals.zip
+      build/dist/originals.zip.sha256
+```
+
+The caller builds the ZIP with its README, CHANGELOG and original artwork,
+then hashes the final ZIP and writes `originals.zip.sha256`. The same two
+files attach to the forge release and this GitHub release; CHANGELOG is inside
+the ZIP. This action uploads the supplied bytes and does not publish to npm.
+
+Every artifact-mode file pattern must match at least one file. Every ZIP needs
+an attached same-name `.sha256` file, and every `<zip>.sha256` needs its ZIP.
+Each checksum contains exactly 64 lowercase hexadecimal characters, two spaces,
+the ZIP filename without a directory, and one LF. Extra whitespace, a different
+filename, or a digest that does not match the actual ZIP fails before any HTTP
+request. For example, after packaging the final ZIP:
+
+```bash
+cd build/dist
+sha256sum originals.zip > originals.zip.sha256
+```
+
+Additional non-ZIP assets are allowed; the ZIP companion rule applies to every
+ZIP in the attachment set. Mirrored mode retains its optional-glob behavior.
+
+The action verifies `public-target-sha` with
+`GET /repos/<owner>/<repo>/git/commits/<sha>`. An absent commit, a mismatched
+response, a short SHA or a branch name fails. It also reads the public
+repository's current default-branch HEAD and compares that HEAD with the
+explicit target using `GET /repos/<owner>/<repo>/compare/<head>...<target>`.
+Only `identical` or `behind` with matching base and merge-base commits passes:
+the target must be that public HEAD or one of its ancestors. A commit reachable
+only through a fork, an ahead or divergent commit, or a private repository
+fails before any write. The default branch proves reachability; it does not
+replace the caller's explicit target SHA. The action creates a missing tag with
+`POST /repos/<owner>/<repo>/git/refs`, naming only that verified public commit.
+An existing tag, including an annotated tag, must resolve to the same commit.
+A competing tag creation is read back and checked; a conflict is never
+force-updated. No branch or default-branch target is inferred. A repeat run
+verifies the public commit and tag again before checking the release assets.
+
 **Before any request.** The inputs are checked; every glob is expanded, and an
 empty file, two files sharing a name, or a name GitHub rewrites on upload fails
 the run. Every Foundry manifest among the files (a JSON file with `manifest` or
@@ -1411,29 +1479,34 @@ the run. Every Foundry manifest among the files (a JSON file with `manifest` or
 
 **Then, in order.**
 
-1. **The tag on GitHub, at the right commit.** The commit the tag names in the
-   checkout is the expected one. The action polls
+1. **The tag on GitHub, at the right commit.** In mirrored mode, the commit
+   the tag names in the checkout is the expected one. The action polls
    `GET /repos/<owner>/<repo>/git/ref/tags/<tag>`, following an annotated tag
    to its commit. A 404 keeps waiting; a commit other than the expected one
    fails the run before anything is written, because a release is never
    attached to a tag the mirror delivered differently. After `wait-seconds` it
    fails, saying the push mirror has not delivered the tag to GitHub and to
-   re-run once it has.
+   re-run once it has. Artifact mode verifies its explicit public commit and
+   creates only a missing tag, as described above.
 2. **An existing release.** A published release for the tag whose assets match
    the files by name, size and digest, and whose prerelease flag matches, is a
    success with nothing written. One that differs fails the run: a published
    release is never edited here. A draft for the tag, found by reading every
    page of releases, is reused and its fields brought up to date.
 3. **Draft.** Otherwise a draft is created with the tag, name, body and
-   prerelease flag, and no `target_commitish`, so GitHub never creates the tag
-   itself.
+   prerelease flag. Mirrored mode omits `target_commitish`. Artifact mode
+   supplies the verified public SHA as `target_commitish`, so a tag that
+   disappears during creation cannot select the repository's default branch.
 4. **Upload.** Every asset already on the draft is deleted, then each file is
    uploaded with its size and a content type by extension (`.zip`
    `application/zip`, `.json` `application/json`, `.pdf` `application/pdf`,
    anything else `application/octet-stream`).
 5. **Check.** The draft's assets are read back: each file present, uploaded,
-   of its size and digest, and nothing else. A mismatch fails the run and the
-   draft stays unpublished.
+   of its size and available digest, and nothing else. Mirrored mode compares
+   a digest when GitHub supplies one. Artifact mode requires GitHub's
+   SHA-256 digest on every asset, including on a repeat publication; a missing
+   digest fails instead of accepting size alone. A mismatch fails the run and
+   the draft stays unpublished.
 6. **Publish.** One update sets `draft: false`, `prerelease`, and `make_latest`
    as the string `"true"` or `"false"`. A draft is invisible to
    `releases/latest`, so no installed copy fetches a release whose assets are
