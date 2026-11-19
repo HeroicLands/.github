@@ -417,11 +417,18 @@ token, so each push starts the repository's checks like any other pull request.
 
 ### The two contracts: two named npm scripts
 
-The workflow runs `npm run <build-script>` and `npm run build:pack-release`,
-and knows nothing about what either does — the same contract
-`deploy-package-site.yml` makes with `build:site`. What it requires is only the
-**output**: `build/dist/<package-kind>.zip` and `build/dist/<package-kind>.json`,
-both non-empty.
+The workflow runs `npm run <build-script>` and `npm run build:pack-release`.
+The release contains non-empty `build/dist/<package-kind>.zip` and
+`build/dist/<package-kind>.json` files. When the manifest advertises a content
+index, that index is also required. If its `<index filename>.sha256` sibling is
+present, it contains the lowercase SHA-256, two spaces, the index filename and
+a newline. The workflow verifies the checksum against the index and uploads
+the pair unchanged. An index with a checksum uses a filename containing
+only letters, digits, periods, underscores and hyphens. Other checksum files
+are not selected by this step.
+The workflow publishes assets to GitHub Releases. Verified remote downloads
+use the digest GitHub supplies for each release asset; they do not require a
+separate checksum file.
 
 `build:pack-release` is fixed rather than an input because all six callers
 spell it the same way. An input for an axis nothing varies on is not

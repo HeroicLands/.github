@@ -13,7 +13,11 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { describe, test } from "node:test";
 import { parse } from "yaml";
 
@@ -121,7 +125,7 @@ for (const [file, spec] of Object.entries(reusable)) {
         for (const [, ref] of code.matchAll(/^\s*(?:-\s*)?uses:\s*(\S+)/gm)) {
             assert.ok(!/^https?:/.test(ref), `uses: ${ref} names a host; use the bare owner/repo form`);
             if (ref.startsWith("HeroicLands/")) {
-                assert.match(ref, /^HeroicLands\/\.github\/actions\/[a-z-]+@main$/, `unexpected shared action reference ${ref}`);
+                assert.match(ref, /^HeroicLands\/\.github\/actions\/[a-z-]+@(?:main|[a-f0-9]{40})$/, `unexpected shared action reference ${ref}`);
             }
         }
     });
@@ -143,10 +147,56 @@ test("release: the script names, the asset guard and the release asset list", ()
         "build/dist/${{ inputs.package-kind }}.zip",
         "build/dist/${{ inputs.package-kind }}.json",
         "build/dist/*.jsonl",
+        "${{ steps.assets.outputs.checksum }}",
         "build/dist/icons.zip",
         "build/dist/images.zip",
         "${{ steps.books.outputs.files }}",
     ]);
+    assert.equal(b.get("The assets exist").id, "assets");
+    assert.equal(b.get("Create GitHub Release").uses, "HeroicLands/.github/actions/github-release@ee497e9ee62ed234fd83797621ce910bc94bf29d");
+});
+
+test("release: an advertised index accepts a legacy producer and checks its optional checksum", () => {
+    const run = stepsByName(load(GITEA, "release-foundry-package.yml"), "release").get("The assets exist").run;
+    const dir = mkdtempSync(join(tmpdir(), "release-assets-"));
+    try {
+        mkdirSync(join(dir, "build/dist"), { recursive: true });
+        const put = (name, data) => writeFileSync(join(dir, "build/dist", name), data);
+        const bytes = '{"id":"a"}\n';
+        const checksum = `${createHash("sha256").update(bytes).digest("hex")}  content.jsonl\n`;
+        put("module.zip", "zip");
+        put("module.json", JSON.stringify({ flags: { metadataUrl: "https://example.test/content.jsonl" } }));
+        put("content.jsonl", bytes);
+        writeFileSync(join(dir, "build/books.json"), "[]");
+        const output = join(dir, "output");
+        const check = () => {
+            writeFileSync(output, "");
+            return spawnSync("bash", ["-eo", "pipefail", "-c", run], { cwd: dir, env: { ...process.env, KIND: "module", GITHUB_OUTPUT: output }, encoding: "utf8" });
+        };
+        put("unrelated.jsonl.sha256", "unrelated checksum");
+        const legacy = check();
+        assert.equal(legacy.status, 0, legacy.stderr);
+        assert.equal(readFileSync(output, "utf8"), "checksum=\n");
+        put("content.jsonl.sha256", "");
+        assert.notEqual(check().status, 0, "an empty checksum must fail");
+        put("content.jsonl.sha256", checksum.replace("content.jsonl", "other.jsonl"));
+        assert.notEqual(check().status, 0, "a checksum for another filename must fail");
+        put("content.jsonl.sha256", `${"0".repeat(64)}  content.jsonl\n`);
+        assert.notEqual(check().status, 0, "a checksum for different bytes must fail");
+        put("content.jsonl.sha256", checksum);
+        const result = check();
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(readFileSync(join(dir, "build/dist/content.jsonl.sha256"), "utf8"), checksum);
+        assert.equal(readFileSync(join(dir, "build/dist/module.zip"), "utf8"), "zip");
+        assert.equal(readFileSync(join(dir, "build/dist/content.jsonl"), "utf8"), bytes);
+        assert.equal(readFileSync(output, "utf8"), "checksum=build/dist/content.jsonl.sha256\n");
+        assert.equal(readFileSync(join(dir, "build/dist/unrelated.jsonl.sha256"), "utf8"), "unrelated checksum");
+        assert.match(result.stdout, /content\.jsonl\.sha256/);
+        rmSync(join(dir, "build/dist/content.jsonl"));
+        assert.notEqual(check().status, 0, "an advertised missing index must fail");
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
 });
 
 test("release: the checkout takes the bot token and the whole history", () => {

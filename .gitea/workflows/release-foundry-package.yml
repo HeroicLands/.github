@@ -642,6 +642,7 @@ jobs:
             # Checked here rather than trusted, in the same spirit as the
             # completeness guard in deploy-package-site.yml.
             - name: The assets exist
+              id: assets
               if: steps.decide.outputs.release == 'true'
               env:
                   KIND: ${{ inputs.package-kind }}
@@ -654,23 +655,31 @@ jobs:
                       fi
                   done
 
-                  # The content index, when the manifest advertises one (#239).
-                  # Its name is *read from the manifest* rather than assumed:
-                  # `flags.metadataUrl` is the URL every consumer fetches, so its
-                  # basename is by definition the name the asset must carry, and
-                  # deriving it a second time here would let the two disagree.
-                  #
-                  # Checked because the failure is otherwise invisible on this
-                  # side and lands weeks later in somebody else's build: a
-                  # release that advertises an index it does not carry 404s at
-                  # the consumer, which is exactly what v0.8.4 did.
+                  # Check the advertised index and its checksum when supplied.
                   index_url="$(node -p "require('./build/dist/$KIND.json').flags?.metadataUrl ?? ''" 2>/dev/null || echo '')"
                   index_asset=""
+                  checksum_asset=""
                   if [ -n "$index_url" ]; then
-                      index_asset="build/dist/$(basename "$index_url")"
+                      index_name="$(basename "$index_url")"
+                      index_asset="build/dist/$index_name"
                       if [ ! -s "$index_asset" ]; then
-                          echo "::error::$index_asset is missing or empty, but the manifest advertises it at $index_url — a release carrying that manifest would 404 for every consumer."
+                          echo "::error::$index_asset is missing or empty."
                           missing=1
+                      fi
+                      if [ -e "$index_asset.sha256" ] || [ -L "$index_asset.sha256" ]; then
+                          checksum_asset="$index_asset.sha256"
+                          if [[ ! "$index_name" =~ ^[A-Za-z0-9._-]+$ ]] || [ ! -s "$checksum_asset" ]; then
+                              echo "::error::$checksum_asset has an unsafe name or is empty."
+                              missing=1
+                          elif ! node -e '
+                              const fs = require("node:fs");
+                              const [file, name] = process.argv.slice(1);
+                              const text = fs.readFileSync(file, "utf8");
+                              if (!/^[0-9a-f]{64}  [^\n]+\n$/.test(text) || text.slice(66, -1) !== name) process.exit(1);
+                          ' "$checksum_asset" "$index_name" || ! (cd build/dist && sha256sum --check --strict -- "$index_name.sha256"); then
+                              echo "::error::$checksum_asset does not match $index_asset."
+                              missing=1
+                          fi
                       fi
                   fi
 
@@ -690,7 +699,8 @@ jobs:
                   done < <(jq -r '.[].file' build/books.json)
 
                   [ "$missing" -eq 0 ] || exit 1
-                  ls -l "build/dist/$KIND.zip" "build/dist/$KIND.json" ${index_asset:+"$index_asset"} ${book_assets[@]+"${book_assets[@]}"}
+                  printf 'checksum=%s\n' "$checksum_asset" >> "$GITHUB_OUTPUT"
+                  ls -l "build/dist/$KIND.zip" "build/dist/$KIND.json" ${index_asset:+"$index_asset"} ${checksum_asset:+"$checksum_asset"} ${book_assets[@]+"${book_assets[@]}"}
 
             # The tag is made on this forge, where the tag protection allows the
             # bot. The push mirror carries it to GitHub.
@@ -718,7 +728,7 @@ jobs:
             # a package that builds no content index or pictures releases unchanged.
             - name: Create GitHub Release
               if: steps.decide.outputs.release == 'true'
-              uses: HeroicLands/.github/actions/github-release@main
+              uses: HeroicLands/.github/actions/github-release@ee497e9ee62ed234fd83797621ce910bc94bf29d
               with:
                   token: ${{ secrets.GH_RELEASE_TOKEN }}
                   tag: ${{ steps.decide.outputs.tag }}
@@ -731,6 +741,7 @@ jobs:
                       build/dist/${{ inputs.package-kind }}.zip
                       build/dist/${{ inputs.package-kind }}.json
                       build/dist/*.jsonl
+                      ${{ steps.assets.outputs.checksum }}
                       build/dist/icons.zip
                       build/dist/images.zip
                       ${{ steps.books.outputs.files }}

@@ -298,6 +298,18 @@ test("a new release: waits for the tag, drafts, uploads, checks, publishes as La
     assert.deepEqual(out.outputs, { "release-url": `${SITE}/releases/tag/${TAG}`, "release-id": "500" });
 });
 
+test("the checksum asset is uploaded with its original bytes", async () => {
+    const c = checkout();
+    const checksum = Buffer.from(`${"a".repeat(64)}  scratch-metadata.jsonl\n`);
+    writeFileSync(join(c.dir, "build/dist/scratch-metadata.jsonl.sha256"), checksum);
+    const fake = await github({ ref: { sha: c.commit } });
+    const out = await run(c.dir, fake, { RELEASE_FILES: `${FILES}\nbuild/dist/*.jsonl.sha256` });
+    assert.equal(out.status, 0, out.stderr);
+    const asset = fake.releases[0].assets.find((entry) => entry.name === "scratch-metadata.jsonl.sha256");
+    assert.equal(asset.digest, digest(checksum));
+    assert.equal(asset.size, checksum.length);
+});
+
 test("an annotated tag is followed to its commit", async () => {
     const c = checkout({ annotated: true });
     const fake = await github({ ref: { sha: c.commit, annotated: true } });
