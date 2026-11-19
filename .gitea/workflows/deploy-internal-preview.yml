@@ -1,0 +1,103 @@
+# Only a trusted base-branch controller calls this workflow.
+name: Publish or clean an internal PR preview
+
+on:
+    workflow_call:
+        inputs:
+            trusted-ref:
+                description: Full commit SHA of the trusted shared helper.
+                required: true
+                type: string
+            operation:
+                description: publish, cleanup or reopen.
+                required: true
+                type: string
+            pr-number:
+                required: true
+                type: string
+            source-sha:
+                required: true
+                type: string
+            package:
+                required: true
+                type: string
+            artifact-id:
+                description: Exact artifact ID returned by the build upload; required for publish.
+                required: false
+                type: string
+            artifact-name:
+                required: false
+                type: string
+            min-pages:
+                default: 1
+                type: number
+            max-pages:
+                default: 0
+                type: number
+        secrets:
+            PREVIEW_SSH_PRIVATE_KEY:
+                required: false
+
+permissions:
+    contents: write
+    actions: read
+
+jobs:
+    deploy:
+        if: ${{ github.server_url != 'https://github.com' && vars.HL_DEPLOY_ENABLED == 'true' }}
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        env:
+            PUBLICATION_MODE: pr
+            SOURCE_REPOSITORY: ${{ github.repository }}
+            PR_NUMBER: ${{ inputs.pr-number }}
+            SOURCE_SHA: ${{ inputs.source-sha }}
+            PUBLICATION_PACKAGE: ${{ inputs.package }}
+            MIN_PAGES: ${{ inputs.min-pages }}
+            MAX_PAGES: ${{ inputs.max-pages }}
+            TRUSTED_REF: ${{ inputs.trusted-ref }}
+            OPERATION: ${{ inputs.operation }}
+        steps:
+            - name: Validate trusted revision and operation
+              run: |
+                  [[ "$TRUSTED_REF" =~ ^[0-9a-f]{40}$ ]]
+                  [[ "$OPERATION" == publish || "$OPERATION" == cleanup || "$OPERATION" == reopen ]]
+            - name: Checkout trusted helper
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  repository: HeroicLands/.github
+                  github-server-url: https://git.pupluppy.org
+                  ref: ${{ inputs.trusted-ref }}
+                  path: trusted-deploy
+                  persist-credentials: false
+            - name: Setup Node.js
+              uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+              with:
+                  node-version: ${{ vars.CI_NODE_VERSION || '24' }}
+            - name: Download pages
+              if: ${{ inputs.operation == 'publish' }}
+              env:
+                  GITEA_TOKEN: ${{ github.token }}
+                  RUN_ID: ${{ github.run_id }}
+                  ARTIFACT_NAME: ${{ inputs.artifact-name }}
+                  ARTIFACT_ID: ${{ inputs.artifact-id }}
+              run: /usr/bin/python3 -I trusted-deploy/actions/internal-site-deploy/download.py publication
+            - name: Validate pages before deployment credentials
+              if: ${{ inputs.operation == 'publish' }}
+              run: node trusted-deploy/actions/internal-site-deploy/publish.mjs validate publication
+            - name: Invalidate reopened PR evidence
+              if: ${{ inputs.operation == 'reopen' }}
+              env:
+                  GITEA_TOKEN: ${{ github.token }}
+              run: node trusted-deploy/actions/internal-site-deploy/publish.mjs preview-reopen
+            - name: Publish or clean under the PR lock
+              if: ${{ inputs.operation != 'reopen' }}
+              env:
+                  GITEA_TOKEN: ${{ github.token }}
+                  PREVIEW_SSH_PRIVATE_KEY: ${{ secrets.PREVIEW_SSH_PRIVATE_KEY }}
+              run: |
+                  if [[ "$OPERATION" == publish ]]; then
+                    node trusted-deploy/actions/internal-site-deploy/publish.mjs preview-publish publication
+                  else
+                    node trusted-deploy/actions/internal-site-deploy/publish.mjs preview-cleanup
+                  fi

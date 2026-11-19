@@ -1359,7 +1359,7 @@ objects or source history.
 # a step in the release job, after the tag is pushed to the forge and the
 # assets are built
 - name: Publish the GitHub Release
-  uses: HeroicLands/.github/actions/github-release@b60f4508cb7d90af4bfecc69c0cd76f73c20ac9e
+  uses: HeroicLands/.github/actions/github-release@e816d89ad1892262d1f620084a0d5787ab29b8d3
   with:
     token: ${{ secrets.GH_RELEASE_TOKEN }}
     tag: ${{ steps.decide.outputs.tag }}
@@ -1415,7 +1415,7 @@ branch; its value is a full SHA, not a branch name:
 
 ```yaml
 - name: Publish the artwork release
-  uses: HeroicLands/.github/actions/github-release@b60f4508cb7d90af4bfecc69c0cd76f73c20ac9e
+  uses: HeroicLands/.github/actions/github-release@e816d89ad1892262d1f620084a0d5787ab29b8d3
   with:
     token: ${{ secrets.GH_RELEASE_TOKEN }}
     tag: ${{ steps.decide.outputs.tag }}
@@ -1553,3 +1553,13 @@ The manual [CDN workflow](.gitea/workflows/publish-package-cdn.yml) accepts
 `PREVIEW_SSH_PRIVATE_KEY`; public writes use the existing R2 secrets. See the
 [publishing guide](docs/internal-site-publishing.md) for caller inputs, the
 artifact/receipt format, credential setup and scoped developer checks.
+
+The [PR preview build](.gitea/workflows/build-internal-preview.yml) and
+[publish/cleanup workflow](.gitea/workflows/deploy-internal-preview.yml) provide
+on-demand same-repository previews. The registry label `ci/preview` requests a
+preview; removing it stops refresh, and closing the PR requests cleanup.
+The [PR workflow interface](docs/internal-site-publishing.md#callable-inputs-and-permissions)
+lists every input/default, caller permissions and named secrets, the deploy gate,
+the shared runner's credential isolation limitation and receiver prerequisites.
+Disabled or skipped cleanup requires an explicit trusted retry; no scheduled
+reconciliation runs.

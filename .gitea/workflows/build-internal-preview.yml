@@ -1,0 +1,114 @@
+# The caller supplies identity from its trusted base-branch controller.
+name: Build an internal PR preview
+
+on:
+    workflow_call:
+        outputs:
+            artifact-id:
+                description: Identifier returned by this build's artifact upload.
+                value: ${{ jobs.build.outputs.artifact-id }}
+        inputs:
+            trusted-ref:
+                description: Full commit SHA of the trusted shared helper.
+                required: true
+                type: string
+            pr-number:
+                required: true
+                type: string
+            source-sha:
+                required: true
+                type: string
+            package:
+                required: true
+                type: string
+            artifact-name:
+                required: true
+                type: string
+            min-pages:
+                default: 1
+                type: number
+            max-pages:
+                default: 0
+                type: number
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        outputs:
+            artifact-id: ${{ steps.pages.outputs.artifact-id }}
+        if: ${{ github.server_url != 'https://github.com' && vars.HL_DEPLOY_ENABLED == 'true' }}
+        runs-on: ubuntu-vm
+        timeout-minutes: 30
+        container:
+            image: git.pupluppy.org/heroiclands/ci-job@sha256:e07e93044b9bd0c49ff8dc51fc9f21772bf1d42e889b211663f3a51514ab85e5
+            options: --memory=4g --memory-swap=4g
+        env:
+            PUBLICATION_MODE: pr
+            SOURCE_REPOSITORY: ${{ github.repository }}
+            PR_NUMBER: ${{ inputs.pr-number }}
+            SOURCE_SHA: ${{ inputs.source-sha }}
+            PUBLICATION_PACKAGE: ${{ inputs.package }}
+            MIN_PAGES: ${{ inputs.min-pages }}
+            MAX_PAGES: ${{ inputs.max-pages }}
+            TRUSTED_REF: ${{ inputs.trusted-ref }}
+        steps:
+            - name: Verify build memory limit
+              run: |
+                  set -eu
+                  test -f /.dockerenv
+                  test "$(cat /sys/fs/cgroup/memory.max)" = 4294967296
+                  test "$(cat /sys/fs/cgroup/memory.swap.max)" = 0
+            - name: Validate trusted revision
+              run: '[[ "$TRUSTED_REF" =~ ^[0-9a-f]{40}$ ]]'
+            - name: Checkout trusted helper
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  repository: HeroicLands/.github
+                  github-server-url: https://git.pupluppy.org
+                  ref: ${{ inputs.trusted-ref }}
+                  path: trusted-deploy
+                  persist-credentials: false
+            - name: Setup Node.js
+              uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+              with:
+                  node-version: ${{ vars.CI_NODE_VERSION || '24' }}
+            - name: Check authoritative PR state
+              id: identity
+              env:
+                  GITEA_TOKEN: ${{ github.token }}
+              run: |
+                  url=$(node trusted-deploy/actions/internal-site-deploy/publish.mjs preview-check)
+                  printf 'base-url=%s\n' "$url" >> "$GITHUB_OUTPUT"
+            - name: Checkout immutable PR head
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  repository: ${{ github.repository }}
+                  github-server-url: https://git.pupluppy.org
+                  ref: ${{ inputs.source-sha }}
+                  path: source
+                  persist-credentials: false
+            - name: Verify checkout
+              working-directory: source
+              run: '[[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]'
+            - name: Install and build
+              working-directory: source
+              env:
+                  PREVIEW_BASE_URL: ${{ steps.identity.outputs.base-url }}
+                  NODE_OPTIONS: --max-old-space-size=3072
+              run: |
+                  npm ci
+                  npm run build:deps
+                  node_modules/.bin/package-build site build --root internal.heroiclands.org --base-url "$PREVIEW_BASE_URL"
+            - name: Stage normalized artifact
+              run: node trusted-deploy/actions/internal-site-deploy/publish.mjs stage source/build/site publication
+            - name: Save pages
+              id: pages
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+              with:
+                  name: ${{ inputs.artifact-name }}
+                  path: publication/
+                  include-hidden-files: true
+                  if-no-files-found: error
+                  retention-days: 3

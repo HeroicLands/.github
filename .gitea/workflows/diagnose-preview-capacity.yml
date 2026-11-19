@@ -1,0 +1,125 @@
+# Build-only capacity diagnostic. It does not publish a preview.
+name: Diagnose preview build capacity
+on:
+    workflow_dispatch:
+        inputs:
+            pr-number:
+                description: Ready Thalorna pull request number
+                required: true
+                type: string
+            source-sha:
+                description: Current full pull request head SHA
+                required: true
+                type: string
+            memory-profile:
+                description: Memory measurement profile (4g matches the production build)
+                required: true
+                type: choice
+                default: 4g
+                options: [2g, 4g]
+permissions:
+    contents: read
+jobs:
+    trusted-dispatch:
+        runs-on: light
+        steps:
+            - name: Require the main branch
+              env:
+                  DISPATCH_REF: ${{ github.ref }}
+              run: test "$DISPATCH_REF" = refs/heads/main
+    capacity:
+        if: ${{ github.ref == 'refs/heads/main' }}
+        runs-on: ubuntu-vm
+        timeout-minutes: 30
+        container:
+            image: git.pupluppy.org/heroiclands/ci-job@sha256:e07e93044b9bd0c49ff8dc51fc9f21772bf1d42e889b211663f3a51514ab85e5
+            options: ${{ inputs.memory-profile == '4g' && '--memory=4g --memory-swap=4g' || '--memory=2g --memory-swap=2g' }}
+        env:
+            PUBLICATION_MODE: pr
+            SOURCE_REPOSITORY: HeroicLands/thalorna
+            PR_NUMBER: ${{ inputs.pr-number }}
+            SOURCE_SHA: ${{ inputs.source-sha }}
+            PUBLICATION_PACKAGE: thalorna
+            MIN_PAGES: 1
+            MAX_PAGES: 0
+        steps:
+            - name: Verify measurement profile
+              env:
+                  PROFILE: ${{ inputs.memory-profile }}
+              run: |
+                  set -eu
+                  case "$PROFILE" in
+                    2g) expected=2147483648 ;;
+                    4g) expected=4294967296 ;;
+                    *) printf 'Invalid memory profile\n' >&2; exit 1 ;;
+                  esac
+                  test -f /.dockerenv
+                  test "$(cat /sys/fs/cgroup/memory.max)" = "$expected"
+                  test "$(cat /sys/fs/cgroup/memory.swap.max)" = 0
+            - name: Checkout diagnostic source
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  persist-credentials: false
+            - name: Checkout reviewed shared helper
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  repository: HeroicLands/.github
+                  github-server-url: https://git.pupluppy.org
+                  ref: ${{ github.sha }}
+                  path: trusted-deploy
+                  persist-credentials: false
+            - name: Setup Node.js
+              uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+              with:
+                  node-version: ${{ vars.CI_NODE_VERSION || '24' }}
+            - name: Install GNU time in the job container
+              run: |
+                  set -eu
+                  test -f /.dockerenv && test "$(id -u)" = 0
+                  apt-get update
+                  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends time
+                  /usr/bin/time --version
+            - name: Check measurement status reporting
+              run: node --test ci/preview-diagnostic/measure-command.test.mjs
+            - name: Check authoritative PR state
+              id: identity
+              env:
+                  GITEA_TOKEN: ${{ github.token }}
+              run: |
+                  url=$(node ci/preview-diagnostic/identity.mjs)
+                  printf 'base-url=%s\n' "$url" >> "$GITHUB_OUTPUT"
+            - name: Checkout immutable PR head
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  repository: HeroicLands/thalorna
+                  github-server-url: https://git.pupluppy.org
+                  ref: ${{ inputs.source-sha }}
+                  path: source
+                  persist-credentials: false
+            - name: Verify checkout
+              working-directory: source
+              run: '[[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]'
+            - name: Install and build with capacity telemetry
+              working-directory: source
+              env:
+                  PREVIEW_BASE_URL: ${{ steps.identity.outputs.base-url }}
+                  NODE_OPTIONS: ${{ inputs.memory-profile == '4g' && '--max-old-space-size=3072' || '--max-old-space-size=1536' }}
+              run: bash ../ci/preview-diagnostic/measure.sh
+            - name: Stage normalized artifact
+              run: node trusted-deploy/actions/internal-site-deploy/publish.mjs stage source/build/site publication
+            - name: Save pages
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+              with:
+                  name: diagnostic-pages
+                  path: publication/
+                  include-hidden-files: true
+                  if-no-files-found: error
+                  retention-days: 3
+            - name: Save bounded telemetry
+              if: ${{ always() }}
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+              with:
+                  name: diagnostic-telemetry
+                  path: diagnostic/
+                  if-no-files-found: error
+                  retention-days: 3

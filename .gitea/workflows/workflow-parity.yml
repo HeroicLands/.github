@@ -5,43 +5,61 @@ name: Workflow parity
 # actions.
 
 on:
-  pull_request:
-    types: [opened, reopened, synchronize]
-    paths:
-      - ".gitea/workflows/**"
-      - "ci/**"
-      - "githooks/**"
-      - "actions/**"
-      - "renovate/**"
-      - "runners/**"
-      - "default.json"
+    pull_request:
+        types: [opened, reopened, synchronize]
+        paths:
+            - ".gitea/workflows/**"
+            - "ci/**"
+            - "githooks/**"
+            - "actions/**"
+            - "renovate/**"
+            - "runners/**"
+            - "default.json"
 
 permissions:
-  contents: read
+    contents: read
 
 jobs:
-  workflow-parity:
-    name: Workflow parity
-    runs-on: light
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: ${{ vars.CI_NODE_VERSION || '24' }}
-      # The publication fixture exercises real rsync deletion. Light job images
-      # need this binary; host runners that already provide it keep theirs.
-      - name: Ensure rsync is available for publication tests
-        run: |
-          if ! command -v rsync >/dev/null 2>&1; then
-            test -f /.dockerenv || {
-              echo "rsync is required on this host runner; provision it before running publication tests." >&2
-              exit 1
-            }
-            apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends rsync
-          fi
-          rsync --version
-      - run: npm ci --prefix ci
-      - run: sh ci/githooks.test.sh
-      - run: node --test ci/*.test.mjs
-      - run: node --test actions/*/*.test.mjs
+    workflow-parity:
+        name: Workflow parity
+        runs-on: light
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+              with:
+                  node-version: ${{ vars.CI_NODE_VERSION || '24' }}
+            # Publication fixtures exercise rsync, kernel locks and bounded extraction.
+            # Host runners require these tools; containers install missing tools.
+            - name: Ensure rsync is available for publication tests
+              run: |
+                  if ! test -x /usr/bin/rsync || ! test -x /usr/bin/flock || ! test -x /usr/bin/time || ! test -x /usr/bin/python3; then
+                    test -f /.dockerenv || {
+                      echo "rsync, flock, GNU time and Python are required on this host runner." >&2
+                      exit 1
+                    }
+                    apt-get update
+                    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends rsync time util-linux python3
+                  fi
+                  rsync --version
+            - run: npm ci --prefix ci
+            - run: sh ci/githooks.test.sh
+            - run: node --test ci/*.test.mjs ci/preview-diagnostic/measure-command.test.mjs
+            - run: node --test actions/*/*.test.mjs
+
+    preview-forced-ssh:
+        name: Preview forced SSH fixture
+        runs-on: ubuntu-vm
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+              with:
+                  node-version: ${{ vars.CI_NODE_VERSION || '24' }}
+            - name: Install fixture tools in the job container
+              run: |
+                  test -f /.dockerenv && test "$(id -u)" = 0
+                  apt-get update
+                  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-server rsync python3
+                  test -x /usr/bin/rrsync
+            - name: Exercise the disposable forced receiver
+              run: bash ci/preview-diagnostic/forced-ssh.sh

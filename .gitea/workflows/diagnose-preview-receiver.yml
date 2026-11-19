@@ -1,0 +1,105 @@
+# A controlled PR supplies identity; this workflow never checks out its code.
+name: Diagnose deployed preview receiver
+on:
+    workflow_dispatch:
+        inputs:
+            operation:
+                description: Publish a fixture or clean the closed controlled PR
+                required: true
+                type: choice
+                options: [publish, cleanup]
+            pr-number:
+                description: Controlled same-repository pull request number
+                required: true
+                type: string
+            source-sha:
+                description: Controlled pull request's full head SHA
+                required: true
+                type: string
+permissions:
+    contents: write
+    actions: read
+jobs:
+    trusted-dispatch:
+        runs-on: light
+        steps:
+            - name: Require the main branch
+              env:
+                  DISPATCH_REF: ${{ github.ref }}
+              run: test "$DISPATCH_REF" = refs/heads/main
+    fixture:
+        outputs:
+            artifact-id: ${{ steps.pages.outputs.artifact-id }}
+        if: ${{ github.ref == 'refs/heads/main' && inputs.operation == 'publish' }}
+        runs-on: ubuntu-vm
+        timeout-minutes: 10
+        permissions:
+            contents: read
+        env:
+            PUBLICATION_MODE: pr
+            SOURCE_REPOSITORY: ${{ github.repository }}
+            PR_NUMBER: ${{ inputs.pr-number }}
+            SOURCE_SHA: ${{ inputs.source-sha }}
+            PUBLICATION_PACKAGE: thalorna
+            MIN_PAGES: 1
+            MAX_PAGES: 0
+        steps:
+            - name: Checkout reviewed shared helper
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  repository: HeroicLands/.github
+                  github-server-url: https://git.pupluppy.org
+                  ref: ${{ github.sha }}
+                  path: trusted-deploy
+                  persist-credentials: false
+            - name: Stage a bounded fixture
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  [[ "$SOURCE_REPOSITORY" == HeroicLands/.github ]]
+                  [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+                  [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+                  prefix="generated/pr/.github/$PR_NUMBER/thalorna"
+                  mkdir -p "$prefix"
+                  printf '/*\n  X-Robots-Tag: noindex\n' > generated/_headers
+                  printf '<!doctype html><main>Preview receiver fixture</main>\n' > "$prefix/index.html"
+                  printf '<!doctype html><main>Not found</main>\n' > "$prefix/404.html"
+                  node trusted-deploy/actions/internal-site-deploy/publish.mjs stage generated publication
+            - name: Save fixture artifact
+              id: pages
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+              with:
+                  name: preview-receiver-fixture
+                  path: publication/
+                  include-hidden-files: true
+                  if-no-files-found: error
+                  retention-days: 3
+    publish:
+        if: ${{ github.ref == 'refs/heads/main' && inputs.operation == 'publish' }}
+        needs: fixture
+        uses: ./.gitea/workflows/deploy-internal-preview.yml
+        with:
+            trusted-ref: ${{ github.sha }}
+            operation: publish
+            pr-number: ${{ inputs.pr-number }}
+            source-sha: ${{ inputs.source-sha }}
+            package: thalorna
+            artifact-name: preview-receiver-fixture
+            artifact-id: ${{ needs.fixture.outputs.artifact-id }}
+            min-pages: 1
+            max-pages: 0
+        secrets:
+            PREVIEW_SSH_PRIVATE_KEY: ${{ secrets.PREVIEW_SSH_PRIVATE_KEY }}
+    cleanup:
+        if: ${{ github.ref == 'refs/heads/main' && inputs.operation == 'cleanup' }}
+        uses: ./.gitea/workflows/deploy-internal-preview.yml
+        with:
+            trusted-ref: ${{ github.sha }}
+            operation: cleanup
+            pr-number: ${{ inputs.pr-number }}
+            source-sha: ${{ inputs.source-sha }}
+            package: thalorna
+            min-pages: 1
+            max-pages: 0
+        secrets:
+            PREVIEW_SSH_PRIVATE_KEY: ${{ secrets.PREVIEW_SSH_PRIVATE_KEY }}

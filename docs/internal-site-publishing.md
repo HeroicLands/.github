@@ -50,16 +50,16 @@ Call the workflow after the build job, only for main/nonrelease publication:
 
 ```yaml
 internal:
-  needs: build
-  if: ${{ github.ref == 'refs/heads/main' }}
-  uses: HeroicLands/.github/.gitea/workflows/deploy-internal-site.yml@main
-  with:
-    artifact-name: internal-pages
-    package: thalorna
-    source-sha: ${{ github.sha }}
-    min-pages: 1000
-  secrets:
-    PREVIEW_SSH_PRIVATE_KEY: ${{ secrets.PREVIEW_SSH_PRIVATE_KEY }}
+    needs: build
+    if: ${{ github.ref == 'refs/heads/main' }}
+    uses: HeroicLands/.github/.gitea/workflows/deploy-internal-site.yml@main
+    with:
+        artifact-name: internal-pages
+        package: thalorna
+        source-sha: ${{ github.sha }}
+        min-pages: 1000
+    secrets:
+        PREVIEW_SSH_PRIVATE_KEY: ${{ secrets.PREVIEW_SSH_PRIVATE_KEY }}
 ```
 
 | Input           | Default                             | Purpose                                         |
@@ -168,3 +168,230 @@ publication and HTTPS completion readback, abort/SIGTERM process-group cleanup,
 pinned-key cleanup, manual destinations and the shared workflow contract. The
 nested deletion fixture runs the sender's own generated file inventory. They do
 not deploy pages or contact atlas, Gitea or Cloudflare.
+
+## PR artifact interface
+
+A PR artifact uses `PUBLICATION_MODE=pr`, `SOURCE_REPOSITORY`, `PR_NUMBER`,
+`SOURCE_SHA`, `PUBLICATION_PACKAGE` and the page limits. The repository is the
+canonical `HeroicLands/<repository>` name, the PR number is a positive decimal
+without leading zeros, and the SHA is the full lowercase head SHA. The build
+uses `--root internal.heroiclands.org` and the base URL
+`https://www.internal.heroiclands.org/pr/<repository>/<number>/<package>/`.
+The trusted helper validates and stages the generated tree into an empty
+artifact directory. It copies the nested package contents to
+`publication/site/<package>/` and the root headers to `publication/site/_headers`,
+then writes and validates the manifest. HTML retains its nested links:
+
+```bash
+PUBLICATION_MODE=pr SOURCE_REPOSITORY=HeroicLands/thalorna PR_NUMBER=123 \
+  PUBLICATION_PACKAGE=thalorna SOURCE_SHA="$SOURCE_SHA" MIN_PAGES=1000 \
+  node trusted-deploy/actions/internal-site-deploy/publish.mjs stage build/site publication
+```
+
+The version 2 manifest and receipt bind the repository, PR number, package,
+head SHA and derived base URL to independently supplied trusted context. The
+transfer helper derives the matching PR destination and `--mkpath` arguments.
+The main deploy workflow publishes main artifacts. The PR workflows require a
+trusted base-branch controller and a reviewed, immutable helper revision.
+
+The trusted publisher helpers derive a lock name from the repository and PR
+number, shared across packages. The PR lookup accepts only a same-repository PR;
+publication requires base `main`, an open, non-draft PR with `ci/preview`
+and the exact candidate head. The cleanup helper rechecks closed state under
+the same supplied lock and leaves a reopened PR untouched. Label removal does
+not request a build or delete existing pages. Cleanup arguments protect sibling
+PRs at the receiver and select the numbered subtree. The disposable forced-SSH fixture checks nested creation and deletion against real
+`rrsync -wo -munge`, with sibling PR, main and CDN sentinels. Deployed-receiver
+acceptance also checks the provisioned account, host key and live paths.
+
+## PR workflows
+
+A trusted base-branch controller calls `build-internal-preview.yml` with the
+canonical repository context, PR number, exact head SHA, package, artifact name,
+page bounds and a full `trusted-ref` identifying the reviewed shared helper.
+The caller chooses an immutable shared revision accepted on `main` and supplies
+that same helper revision. The build job rechecks eligibility, verifies the checked-out
+head before package code runs and declares no deployment secret input or mapping.
+A label-add request starts a build; a synchronized or reopened PR refreshes only when the
+current PR retains the label. The native `label_updated` event distinguishes
+added labels from removed labels. Forks fail the same-repository check.
+
+After a successful build, the trusted controller calls
+`deploy-internal-preview.yml` with operation `publish` and the same independent
+context. The publisher downloads the exact uploaded artifact ID supplied by the caller,
+verifies its name and current run within the caller repository, and limits its
+ZIP to 512 MiB, and checks at most 100,000 entries, 256 MiB per file and 2 GiB
+total expanded bytes before extracting anything. Streamed extraction also
+enforces each declared size. It rejects links, special files, duplicate names
+and unsafe paths, then validates the manifest before exposing its named SSH
+key. Under the repository/PR flock it rechecks the current PR, transfers pages
+and receipt, reads back the receipt, rechecks the PR and posts the exact-head
+`preview/<package>/pr-<number>` status. The controller calls the same workflow
+with operation `cleanup` on close, independent of the build and label. Cleanup
+rechecks closed state under the same lock, including a PR retargeted from main,
+supersedes preview statuses on the
+current head and uses the pinned receiver key; a reopened PR is left untouched. The cleanup input SHA identifies the event's
+head and does not restrict deletion of a currently closed PR.
+
+On a reopen event the controller calls the deploy workflow with operation
+`reopen` before deciding whether the label requests a build. This operation
+rechecks the open PR and invalidates matching statuses on its current head under
+the same lock, including when the label is absent. It requires the job token
+and does not forward the SSH key. Cleanup fails before deletion
+if status lookup or invalidation fails. Historical heads can retain statuses;
+the preview link consumer checks the current PR identity and exact current
+receipt/readback before exposing a link rather than relying on a status URL
+alone. No scheduled recovery covers a suppressed event.
+
+The PR build runs in the `ubuntu-vm` container, with a 4 GiB container limit and
+a 30-minute runner timeout. Its Node heap is capped at 3072 MiB. An
+out-of-memory or timeout failure remains a failure. Build and publisher jobs use
+the existing shared `runner` account and rootless Docker infrastructure. Build
+jobs permit the runner's daemon endpoint and proxy socket. This arrangement does
+not isolate publication credentials from PR code; omitted workflow secret
+mappings do not establish what the forge includes in task payloads. Publisher
+keys use private identity directories, and SSH, rsync and locking use absolute
+`/usr/bin/ssh`, `/usr/bin/rsync` and `/usr/bin/flock` paths. These controls do not
+provide separate-user credential isolation.
+
+The caller grants the ordinary job token the Code-write permission needed for
+status publication and supplies only `PREVIEW_SSH_PRIVATE_KEY` by name to the
+deploy workflow. Fork tokens are not assumed to have status-write authority.
+The source workflows take effect for a repository when its trusted controller
+pins an immutable shared revision accepted on `main`. The disposable forced-SSH
+fixture covers nested
+creation and bounded cleanup; live receiver acceptance covers the deployed
+pairing. No scheduled recovery covers a suppressed close event.
+
+### Callable inputs and permissions
+
+The reusable workflows take these inputs. The build returns `artifact-id`, the
+identifier from its successful upload. Pass that output to the publish call;
+cleanup and reopen omit it. Deploy returns no workflow outputs. This exact ID
+selects the intended upload even when retries retain same-name artifacts under
+one run ID; no repository-wide name search chooses an upload.
+
+| Input           | Build default | Deploy default | Meaning                                                                                         |
+| --------------- | ------------- | -------------- | ----------------------------------------------------------------------------------------------- |
+| `trusted-ref`   | required      | required       | Reviewed full lowercase shared-helper SHA; pin the external workflow call to the same revision. |
+| `pr-number`     | required      | required       | Positive PR number from the trusted controller.                                                 |
+| `source-sha`    | required      | required       | Full current PR head SHA; cleanup uses the close-event head for context.                        |
+| `package`       | required      | required       | Lowercase package prefix.                                                                       |
+| `artifact-name` | required      | empty          | Same-run artifact name; required when the operation is `publish`.                               |
+| `artifact-id`   | unavailable   | empty          | Exact build upload ID; required when the operation is `publish`.                                |
+| `min-pages`     | `1`           | `1`            | Minimum number of package `index.html` pages.                                                   |
+| `max-pages`     | `0`           | `0`            | Maximum page count; zero means no count ceiling.                                                |
+| `operation`     | unavailable   | required       | `publish`, `cleanup` or `reopen`.                                                               |
+
+Build calls grant `contents: read` and omit a secrets mapping. Deploy calls grant
+`contents: write` for commit statuses and `actions: read` for the same-run artifact.
+Only `publish` and `cleanup` receive `PREVIEW_SSH_PRIVATE_KEY`; `reopen` uses the
+ordinary job token alone. The reusable declaration marks the key optional so a
+reopen call can omit it; publication and cleanup reject a missing key.
+
+Both workflows require Gitea and `HL_DEPLOY_ENABLED=true`. With that variable
+unset or false the operation is skipped, including cleanup and reopen status
+invalidation. A successful run containing a skipped deploy is not publication
+or deletion evidence. There is no reconciler: after a disabled gate, skipped
+close event or failed cleanup, an operator must re-run trusted cleanup for the
+closed PR. Do not treat enabling the variable as recovery of missed events.
+
+A caller in this shared repository can use local reusable references at its
+trusted main dispatch revision, as the receiver diagnostic does:
+
+```yaml
+permissions:
+    contents: write
+    actions: read
+jobs:
+    build:
+        if: ${{ github.ref == 'refs/heads/main' }}
+        permissions:
+            contents: read
+        uses: ./.gitea/workflows/build-internal-preview.yml
+        with:
+            trusted-ref: ${{ github.sha }}
+            pr-number: ${{ inputs.pr-number }}
+            source-sha: ${{ inputs.source-sha }}
+            package: thalorna
+            artifact-name: preview-pages
+    publish:
+        needs: build
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: ./.gitea/workflows/deploy-internal-preview.yml
+        with:
+            trusted-ref: ${{ github.sha }}
+            operation: publish
+            pr-number: ${{ inputs.pr-number }}
+            source-sha: ${{ inputs.source-sha }}
+            package: thalorna
+            artifact-name: preview-pages
+            artifact-id: ${{ needs.build.outputs.artifact-id }}
+        secrets:
+            PREVIEW_SSH_PRIVATE_KEY: ${{ secrets.PREVIEW_SSH_PRIVATE_KEY }}
+    cleanup:
+        if: ${{ github.event.action == 'closed' }}
+        uses: ./.gitea/workflows/deploy-internal-preview.yml
+        with:
+            trusted-ref: ${{ github.sha }}
+            operation: cleanup
+            pr-number: ${{ github.event.pull_request.number }}
+            source-sha: ${{ github.event.pull_request.head.sha }}
+            package: thalorna
+        secrets:
+            PREVIEW_SSH_PRIVATE_KEY: ${{ secrets.PREVIEW_SSH_PRIVATE_KEY }}
+```
+
+The example shows the call interfaces; a package repository's base-branch
+controller supplies its own eligibility and event conditions and uses external
+`HeroicLands/.github/.gitea/workflows/` references pinned to the reviewed full
+commit. Its `trusted-ref` is that same shared commit, not the package's event
+SHA. The repository context always comes from the caller, never an artifact.
+The source repository must contain a package-build site for the build call.
+Cleanup has no build dependency and ignores label removal and draft state.
+
+### Preview build capacity diagnostic
+
+The build-only capacity workflow accepts a ready Thalorna pull request number and
+its current full head SHA, and a memory profile of `4g` (default) or `2g`.
+The profiles request matching container memory and swap limits. The `4g` profile
+uses a 3072 MiB Node heap, and the `2g` profile uses a 1536 MiB Node heap. The job verifies the actual cgroup limit
+before building; a runner that retains a different limit fails the profile. The
+`2g` profile measures the smaller limit independently of the production `4g`
+profile. It validates the same-repository identity against the forge and runs
+the shared preview build commands with the nested preview base
+URL. It does not publish a preview or require the preview label. The pages
+artifact is the normalized build output; telemetry records elapsed time, maximum
+resident memory and shell exit status for each command, plus available cgroup
+memory values. GNU time also reports signal termination. An unavailable cgroup value is recorded explicitly. A failed command,
+timeout, interrupted upload or missing artifact is not a capacity result. A
+job-level timeout can prevent the telemetry upload.
+
+The forced SSH fixture runs in a CI job container with an ephemeral
+key and loopback server. It exercises nested creation, repeat publication,
+receipt readback, PR cleanup and cancellation against `rrsync`. Its sentinels
+cover sibling PR, main and CDN paths. This fixture exercises its disposable receiver;
+the deployed receiver requires its own acceptance evidence.
+
+### Deployed receiver diagnostic
+
+Both diagnostics require dispatch from `refs/heads/main`; another ref fails the
+explicit dispatch guard and skips every diagnostic operation. Helper checkouts
+use the dispatch SHA, and receiver jobs call the deploy workflow locally from
+that same revision. The capacity diagnostic requires the container image,
+network access for normal dependencies, GNU time and the selected memory budget.
+
+The manually dispatched receiver diagnostic requires `HL_DEPLOY_ENABLED=true`,
+`actions: read` and `contents: write`, the named `PREVIEW_SSH_PRIVATE_KEY`, atlas's
+pinned host key, the provisioned forced-rrsync receiver and HTTPS receipt
+readback. It uses the shared runner arrangement described above. A ready
+same-repository controlled PR must carry the existing `ci/preview`
+label for publication; cleanup requires that PR to be closed. It stages a small fixture for a
+controlled, ready same-repository PR with `ci/preview`. Supply its number and
+full current head SHA. The trusted publisher validates the artifact and checks
+the PR and receipt before recording status. After that controlled PR closes,
+the `cleanup` operation checks its closed state, invalidates its status and
+removes its preview subtree. The diagnostic declares the named preview key only on
+the publisher call and does not run PR code. Check the receipt, status and sibling,
+main and CDN paths when assessing the result. This fixture does not establish
+consumer-controller behavior or site-build capacity.
