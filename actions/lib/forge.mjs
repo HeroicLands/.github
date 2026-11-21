@@ -21,6 +21,32 @@ export const GITHUB_URL = "https://github.com";
 /** The most pages a single list read follows before it gives up. */
 const MAX_PAGES = 1000;
 
+/** The most times one idempotent read is attempted before it fails. */
+const MAX_ATTEMPTS = 4;
+
+/** Milliseconds waited before each retry; their sum bounds the total delay. */
+const BACKOFF_MS = [250, 500, 1000];
+
+/** Network error codes that mark an interrupted, retryable connection. */
+const TRANSIENT_CODES = new Set([
+    "UND_ERR_SOCKET",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "EAI_AGAIN",
+]);
+
+/** Response statuses that mark a forge or proxy that is briefly unavailable. */
+const TRANSIENT_STATUSES = new Set([502, 503, 504]);
+
+/**
+ * Collaborators a request can be given in place of the real ones.
+ *
+ * @typedef {object} RequestOptions
+ * @property {typeof fetch} [fetch] defaults to the global `fetch`
+ * @property {(ms: number) => Promise<void>} [sleep] defaults to a timer
+ */
+
 /** A response that was not a success. */
 export class ApiError extends Error {
     constructor(method, path, status, body) {
@@ -58,6 +84,54 @@ function header(res, name) {
     return res.headers?.get?.(name) ?? null;
 }
 
+/** The network error code carried by an error or anywhere in its cause chain. */
+function transientCode(err) {
+    for (let e = err, depth = 0; e && depth < 5; e = e.cause, depth++) {
+        if (TRANSIENT_CODES.has(e.code)) return e.code;
+    }
+    return null;
+}
+
+/**
+ * One GET whose body is read as JSON, retried on transient failures.
+ *
+ * Only a transport interruption (while sending the request or reading the
+ * body) or a 502, 503 or 504 response is retried, up to `MAX_ATTEMPTS`
+ * attempts with `BACKOFF_MS` between them. Any other status fails at once.
+ *
+ * @returns {Promise<{res: Response, body: any}>}
+ * @throws {ApiError} on a non-success status
+ * @throws {Error} when the attempts end on a transport failure; the message
+ *   names the request and the cause
+ */
+async function getJson(url, path, headers, options) {
+    const doFetch = options.fetch ?? globalThis.fetch;
+    const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    for (let attempt = 1; ; attempt++) {
+        let failure;
+        try {
+            const res = await doFetch(url, { headers });
+            if (res.ok) return { res, body: await res.json() };
+            const error = new ApiError("GET", path, res.status, await res.text());
+            if (!TRANSIENT_STATUSES.has(res.status)) throw error;
+            failure = { error, reason: `status ${res.status}` };
+        } catch (err) {
+            if (err instanceof ApiError && !TRANSIENT_STATUSES.has(err.status)) throw err;
+            const code = err instanceof ApiError ? err.status : transientCode(err);
+            if (code === null) throw err;
+            failure = { error: err, reason: err.cause?.message ?? err.message, code };
+        }
+        if (attempt >= MAX_ATTEMPTS) {
+            if (failure.error instanceof ApiError) throw failure.error;
+            throw new Error(
+                `GET ${path} failed after ${attempt} attempts: ${failure.code}: ${failure.reason}`,
+                { cause: failure.error },
+            );
+        }
+        await sleep(BACKOFF_MS[attempt - 1]);
+    }
+}
+
 /**
  * Every item of a list endpoint.
  *
@@ -69,19 +143,24 @@ function header(res, name) {
  *
  * @param {ReturnType<typeof forgeOf>} forge
  * @param {string} path the endpoint, with no query string
+ * Each page is retried on a transient failure (see `getJson`), so an
+ * interrupted connection does not fail the read.
+ *
  * @param {string | undefined} token
+ * @param {RequestOptions} [options]
  * @returns {Promise<any[]>}
  * @throws {ApiError} when any page cannot be read; a partial list is never returned
+ * @throws {Error} when a page stays unreachable after every attempt
  */
-export async function readAll(forge, path, token) {
+export async function readAll(forge, path, token, options = {}) {
     const items = [];
     for (let page = 1; page <= MAX_PAGES; page++) {
-        const res = await fetch(
+        const { res, body: batch } = await getJson(
             `${forge.api}${path}?per_page=100&limit=50&page=${page}`,
-            { headers: forge.headers(token) },
+            path,
+            forge.headers(token),
+            options,
         );
-        if (!res.ok) throw new ApiError("GET", path, res.status, await res.text());
-        const batch = await res.json();
         items.push(...batch);
         if (batch.length === 0) return items;
         const total = header(res, "x-total-count");
@@ -96,12 +175,14 @@ export async function readAll(forge, path, token) {
 }
 
 /**
- * One request that changes something.
+ * One request that changes something. It is never retried, because repeating
+ * it could apply the change twice.
  *
+ * @param {RequestOptions} [options]
  * @throws {ApiError} on a non-success status
  */
-export async function send(forge, method, path, token, body) {
-    const res = await fetch(`${forge.api}${path}`, {
+export async function send(forge, method, path, token, body, options = {}) {
+    const res = await (options.fetch ?? globalThis.fetch)(`${forge.api}${path}`, {
         method,
         headers: { ...forge.headers(token), "Content-Type": "application/json" },
         ...(body ? { body: JSON.stringify(body) } : {}),
