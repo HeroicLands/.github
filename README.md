@@ -863,7 +863,8 @@ wants its own rules may add a `renovate.json` extending
 
 Commit subjects read `chore(deps): update patch dependencies`. Declared ranges
 are kept: a version inside the range changes the lockfile only, and
-`peerDependencies` widen. Pull requests carry no labels, and at most four are
+`peerDependencies` widen. Pull requests carry no labels, at most two are opened per
+repository in an hour so their checks do not all start together, and at most four are
 open per repository.
 
 ### How a patch or lockfile pull request merges

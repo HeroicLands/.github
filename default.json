@@ -10,7 +10,7 @@
   "commitMessageLowerCase": "always",
   "prBodyTemplate": "{{{table}}}{{{notes}}}",
   "prConcurrentLimit": 4,
-  "prHourlyLimit": 0,
+  "prHourlyLimit": 2,
   "rangeStrategy": "replace",
   "automerge": false,
   "automergeStrategy": "squash",
