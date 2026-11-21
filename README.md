@@ -10,6 +10,11 @@ single command line and is scoped by what it *reads*: the content tree, `lang/`,
 `styles/`, `src/`, the assets and the manifest. Repository governance is none of
 those, which is what this repository is for.
 
+## `actions/dependency-cache`
+
+The [dependency snapshot helper](actions/dependency-cache/README.md) inventories
+and restores reviewed, exact dependency caches for offline builds.
+
 ## Local git hooks and `actions/githooks`
 
 `githooks/` is the canonical set copied unchanged into each repository’s
