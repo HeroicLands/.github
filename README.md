@@ -1071,6 +1071,13 @@ issue that should carry the work and drifts out of sync with it, and in a
 published doc comment it leaks onto the API site as documentation prose. File
 or find an issue, record the code-site context there, and leave the code clean.
 
+**Comment styles.** In `.py`, `.sh`, `.yml`, `.yaml`, `.toml` and `Makefile`
+files a `#` that begins the line or follows whitespace opens a comment, and
+`//`, `/*` and `*` do not. A `#` glued to what precedes it (`$#`, `${#x}`, a
+URL fragment) is not a comment. Every other file type uses `//`, `/*` and
+`*`, so a Markdown heading or a CSS color is never a finding. Name `Makefile`
+in `extensions` to scan Makefiles.
+
 **What it will not flag.** String and template-literal *contents* are blanked
 before matching, and only the comment portion of a line is examined — so
 `const label = "TODO"` is not a finding. One useful consequence: a markdown

@@ -26,7 +26,13 @@
  * - *String contents are blanked before matching*, so a literal `"TODO"` is
  *   not a finding. The blanking is length-preserving — spaces, not removal —
  *   so every offset still addresses the same character of the original line.
- * - *Only the comment portion of a line is checked*, for the same reason.
+ * - *Only the comment portion of a line is checked*, for the same reason. In
+ *   a file where `#` starts a comment (`.py`, `.sh`, `.yml`, `.yaml`,
+ *   `.toml`, `Makefile`), a `#` that begins the line or follows whitespace
+ *   opens one, and `//`, `/*` and `*` do not. A `#` glued to what precedes
+ *   it — `$#`, `${#x}`, a URL fragment — is not a comment. Every other file
+ *   type keeps `#` as ordinary text, so a Markdown heading or a CSS color is
+ *   never a comment.
  * - *The column is the marker's own*, not the start of the line, so an editor
  *   opens on the word (SoHL#1668).
  *
@@ -42,7 +48,7 @@
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, extname, join } from "node:path";
 
 const DEFAULT_PATHS = "src";
 const DEFAULT_EXTENSIONS = ".ts,.tsx,.js,.jsx,.mjs,.cjs";
@@ -65,9 +71,32 @@ function list(value, fallback) {
 }
 
 const PATHS = list(process.env.TODOS_PATHS, DEFAULT_PATHS);
+
+/** Extensions of the file types in which `#` starts a line comment. */
+const HASH_EXTENSIONS = new Set([".py", ".sh", ".yml", ".yaml", ".toml"]);
+
+/** Base names, with no extension, of the files in which `#` starts a comment. */
+const HASH_BASENAMES = new Set(["Makefile", "makefile", "GNUmakefile"]);
+
+/** An entry is a base name when it names a hash-comment file, else an extension. */
 const EXTENSIONS = list(process.env.TODOS_EXTENSIONS, DEFAULT_EXTENSIONS).map(
-    (ext) => (ext.startsWith(".") ? ext : `.${ext}`),
+    (ext) => (ext.startsWith(".") || HASH_BASENAMES.has(ext) ? ext : `.${ext}`),
 );
+
+/** Whether `path` is selected by an extension or base-name entry. */
+function matches(path) {
+    const name = basename(path);
+    return EXTENSIONS.some((ext) =>
+        HASH_BASENAMES.has(ext) ? name === ext : path.endsWith(ext),
+    );
+}
+
+/** Whether `#` starts a comment in `path`. */
+function usesHashComments(path) {
+    return (
+        HASH_BASENAMES.has(basename(path)) || HASH_EXTENSIONS.has(extname(path))
+    );
+}
 const MARKER_WORDS = list(process.env.TODOS_MARKERS, DEFAULT_MARKERS);
 
 /** A finding, in the form an error matcher already reads. */
@@ -95,6 +124,17 @@ const STRING = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
 /** The comment portion of a line: `//…`, `/*…`, or a `*` continuation. */
 const COMMENT = /\/\/.*|\/\*.*|^\s*\*.*/;
 
+/** A `#` comment: the `#` begins the line or follows whitespace. */
+const HASH_COMMENT = /(?<=^|\s)#.*/;
+
+/**
+ * The comment portion of a blanked line, as a match whose `index` is its
+ * offset, or null when the line has none.
+ */
+function commentOf(blanked, file) {
+    return blanked.match(usesHashComments(file) ? HASH_COMMENT : COMMENT);
+}
+
 /**
  * The line with every string literal's *contents* replaced by spaces.
  *
@@ -115,7 +155,7 @@ function* walk(entry) {
         if (PRUNE.has(name)) continue;
         const path = join(entry, name);
         if (statSync(path).isDirectory()) yield* walk(path);
-        else if (EXTENSIONS.some((ext) => path.endsWith(ext))) yield path;
+        else if (matches(path)) yield path;
     }
 }
 
@@ -160,7 +200,7 @@ for (const file of files) {
     readFileSync(file, "utf8")
         .split("\n")
         .forEach((line, index) => {
-            const comment = blankStrings(line).match(COMMENT);
+            const comment = commentOf(blankStrings(line), file);
             if (!comment) return;
             const at = comment[0].search(MARKERS);
             if (at === -1) return;
