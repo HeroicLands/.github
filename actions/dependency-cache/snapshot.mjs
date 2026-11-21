@@ -202,6 +202,6 @@ if (
   import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
 )
   main(process.argv.slice(2)).catch((error) => {
-    process.stderr.write(`${process.argv[1]}: error: ${error.message}\n`);
+    process.stderr.write(`${process.argv[1]}:1:1: error: ${error.message}\n`);
     process.exitCode = 1;
   });
