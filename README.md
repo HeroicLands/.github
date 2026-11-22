@@ -1077,6 +1077,27 @@ issue that should carry the work and drifts out of sync with it, and in a
 published doc comment it leaks onto the API site as documentation prose. File
 or find an issue, record the code-site context there, and leave the code clean.
 
+**Comment styles.** In `.py`, `.sh`, `.yml`, `.yaml`, `.toml` and `Makefile`
+files a `#` opens a comment under that language's own rule, and `//`, `/*` and
+`*` do not:
+
+- Python and TOML: any `#` outside a string, so `x=1# note` has a comment.
+- Shell: a `#` that starts a word, meaning it follows whitespace, `;`, `&`, `|`
+  or `(` or begins the line. `$#`, `${#x}` and a quoted `#` are not comments.
+- YAML: a `#` at the line start or after whitespace, so a URL fragment is not a
+  comment.
+- Makefile: any `#` not escaped by a backslash; a recipe line (one starting with
+  a tab) follows the shell rule.
+
+Every other file type uses `//`, `/*` and `*`, so a Markdown heading or a CSS
+color is never a finding. Name `Makefile` in `extensions` to scan Makefiles.
+
+Lexical context carries across lines in these languages, so literal content is
+never a finding: Python and TOML multiline strings (`"""` and `'''`, with any
+prefix), YAML block scalars (`|` and `>`) and multiline quoted scalars, and
+shell multiline quotes and here-documents. Here-documents inside `$(( ))`
+arithmetic and Makefile `define` bodies are not tracked.
+
 **What it will not flag.** String and template-literal *contents* are blanked
 before matching, and only the comment portion of a line is examined — so
 `const label = "TODO"` is not a finding. One useful consequence: a markdown
