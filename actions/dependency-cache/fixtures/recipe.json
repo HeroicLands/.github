@@ -1,0 +1,10 @@
+{
+  "package": "example",
+  "version": "1.2.3",
+  "sourceClosure": ["https://example.invalid/fixture"],
+  "tool": {
+    "name": "fixture-fetcher",
+    "version": "1.0.0",
+    "source": "fixture-only"
+  }
+}

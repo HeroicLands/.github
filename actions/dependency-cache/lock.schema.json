@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Copyright (c) 2026 Tom Rodriguez (Toasty) <toasty@heroiclands.org>. SPDX-License-Identifier: GPL-3.0-or-later",
+  "title": "Reviewed dependency snapshot lock",
+  "description": "Structural schema. validateLock also enforces digest equality, sorted unique paths, declared parents, safe path segments, required roots and exact package/version directories.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "recipe", "recipeDigest", "inventory", "bundleDigest"],
+  "properties": {
+    "format": { "const": 1 },
+    "recipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["package", "version", "sourceClosure", "tool"],
+      "properties": {
+        "package": { "$ref": "#/$defs/token" },
+        "version": { "$ref": "#/$defs/token" },
+        "sourceClosure": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/text" }
+        },
+        "tool": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "version", "source"],
+          "properties": {
+            "name": { "$ref": "#/$defs/text" },
+            "version": { "$ref": "#/$defs/text" },
+            "source": { "$ref": "#/$defs/text" }
+          }
+        }
+      }
+    },
+    "recipeDigest": { "$ref": "#/$defs/digest" },
+    "bundleDigest": { "$ref": "#/$defs/digest" },
+    "inventory": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "type"],
+            "properties": {
+              "path": { "$ref": "#/$defs/path" },
+              "type": { "const": "directory" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "type", "bytes", "sha256"],
+            "properties": {
+              "path": { "$ref": "#/$defs/path" },
+              "type": { "const": "file" },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "sha256": { "$ref": "#/$defs/digest" }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "token": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$" },
+    "text": { "type": "string", "pattern": "\\S" },
+    "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "path": {
+      "type": "string",
+      "pattern": "^(foreign|metadata|navigation)(/[^/\\\\:\\u0000-\\u001f]+)*$",
+      "description": "Relative POSIX path with no empty, dot or dot-dot segment. Parents precede children in the sorted inventory."
+    }
+  }
+}
