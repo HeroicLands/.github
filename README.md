@@ -1335,6 +1335,11 @@ the method, the status and the forge's answer, as in
 command or version script names what ran and its exit status. The token is
 never printed.
 
+A final step, "Require a decision", fails the action with `version-pr: error: the
+script ended without deciding has-changesets` when the `has-changesets` output is
+neither `true` nor `false`, so a script that never ran `main()` cannot end the
+action as a success with no outcome.
+
 ## `actions/release-tag`
 
 Tags the commit that set `package.json`'s version with `v<version>` and pushes

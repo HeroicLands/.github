@@ -15,7 +15,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { isEntryPoint } from "../lib/entry.mjs";
 
 import { ApiError, forgeOf, readAll } from "../lib/forge.mjs";
 
@@ -125,6 +125,6 @@ async function main() {
     );
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (isEntryPoint(import.meta.url)) {
     await main();
 }

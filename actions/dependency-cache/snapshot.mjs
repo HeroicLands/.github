@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { isEntryPoint } from "../lib/entry.mjs";
 import { atInput, inputError, readJson, report } from "./diagnostics.mjs";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -225,8 +225,4 @@ async function main(args) {
     }),
   );
 }
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
-)
-  main(process.argv.slice(2)).catch(report);
+if (isEntryPoint(import.meta.url)) main(process.argv.slice(2)).catch(report);

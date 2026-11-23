@@ -6,6 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import fs from "node:fs/promises";
 import {
   cp,
@@ -295,4 +296,29 @@ test("unsafe lock diagnostics locate the literal in the trusted input", async (t
   assert.match(result.stderr, /unsafe path/);
   assert.doesNotMatch(result.stderr, /Refresh/);
   await absent(destination);
+});
+
+test("the script runs when reached through a symlinked directory", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "entry-guard-"));
+  try {
+    symlinkSync(
+      new URL(".", import.meta.url).pathname,
+      path.join(dir, "linked"),
+      "dir",
+    );
+    const result = spawnSync(
+      process.execPath,
+      [path.join(dir, "linked", "restore.mjs")],
+      {
+        cwd: dir,
+        env: {},
+        encoding: "utf8",
+        input: "",
+      },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Usage: node restore\.mjs/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

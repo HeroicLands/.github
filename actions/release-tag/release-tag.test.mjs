@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -163,4 +163,21 @@ test("a version that is not X.Y.Z is refused", () => {
     assert.equal(result.status, 1);
     assert.match(result.stderr, /^package\.json: error: version "0\.3" is not X\.Y\.Z/m);
     assert.equal(remoteTag(remote, "v0.3"), undefined);
+});
+
+test("the script runs when reached through a symlinked directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "entry-guard-"));
+    try {
+        symlinkSync(new URL(".", import.meta.url).pathname, join(dir, "linked"), "dir");
+        const result = spawnSync(process.execPath, [join(dir, "linked", "release-tag.mjs")], {
+            cwd: dir,
+            env: {},
+            encoding: "utf8",
+            input: "",
+        });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /package\.json: error/);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
 });

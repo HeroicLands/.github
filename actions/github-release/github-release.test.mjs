@@ -2,8 +2,8 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -741,4 +741,21 @@ test("mirrored callers retain optional globs and the legacy missing-digest behav
     const out = await run(c.dir, fake);
     assert.equal(out.status, 0, out.stderr);
     assert.ok(!fake.requests.some((r) => r.path.includes("/compare/") || r.path.includes("/git/commits/")));
+});
+
+test("the script runs when reached through a symlinked directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "entry-guard-"));
+    try {
+        symlinkSync(new URL(".", import.meta.url).pathname, join(dir, "linked"), "dir");
+        const result = spawnSync(process.execPath, [join(dir, "linked", "github-release.mjs")], {
+            cwd: dir,
+            env: {},
+            encoding: "utf8",
+            input: "",
+        });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /no tag given/);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
 });

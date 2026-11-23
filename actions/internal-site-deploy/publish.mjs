@@ -17,7 +17,8 @@ import path from "node:path";
 import os from "node:os";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { pathToFileURL, fileURLToPath } from "node:url";
+import { fileURLToPath } from "node:url";
+import { isEntryPoint } from "../lib/entry.mjs";
 
 export const RECEIPT = ".preview-publication.json";
 export const DESTINATION = "preview-publish@192.168.40.15";
@@ -1385,7 +1386,7 @@ Credentials by command:
         { stdio: "inherit", signal, cancellationGraceMs: 10000 },
     );
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+if (isEntryPoint(import.meta.url))
     withPublicationSignals(main).catch((error) => {
         console.error(error.message);
         process.exitCode ||= 1;

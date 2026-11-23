@@ -33,7 +33,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isEntryPoint } from "../lib/entry.mjs";
 
 /** A finding, in the form an error matcher already reads. */
 export function format({ file, line, column, severity = "error", message }) {
@@ -451,7 +451,7 @@ export async function main(env = process.env) {
     output("pr-number", String(number));
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (isEntryPoint(import.meta.url)) {
     try {
         await main();
     } catch (error) {

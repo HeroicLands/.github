@@ -13,7 +13,7 @@
 // Environment: FORGE_API (default https://git.pupluppy.org/api/v1),
 // RELEASE_BOT_TOKEN, ORG (default HeroicLands).
 
-import { pathToFileURL } from "node:url";
+import { isEntryPoint } from "../actions/lib/entry.mjs";
 
 export const APPROVED_BRANCHES = ["renovate/patch", "renovate/lock-file-maintenance"];
 export const DEPENDENCY_USER = "renovate";
@@ -103,4 +103,4 @@ async function main() {
     if (failed > 0) process.exitCode = 1;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) await main();
+if (isEntryPoint(import.meta.url)) await main();

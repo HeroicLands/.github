@@ -26,7 +26,7 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isEntryPoint } from "../lib/entry.mjs";
 import { pendingChangesets } from "../version-pr/version-pr.mjs";
 
 /** A finding, in the form an error matcher already reads. */
@@ -183,7 +183,7 @@ export async function main(env = process.env, cwd = process.cwd()) {
     output(env, "pushed", "true");
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (isEntryPoint(import.meta.url)) {
     try {
         await main();
     } catch (error) {

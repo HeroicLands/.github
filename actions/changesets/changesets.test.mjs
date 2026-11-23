@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -88,4 +88,21 @@ test("multiple changesets across pages pass on both forges", () => {
     const onePage = runOn("gitea", { event, files: [cs("one"), ...filler] });
     assert.equal(onePage.status, 0);
     assert.match(onePage.stdout, /adds 1 changeset\(s\)/);
+});
+
+test("the script runs when reached through a symlinked directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "entry-guard-"));
+    try {
+        symlinkSync(new URL(".", import.meta.url).pathname, join(dir, "linked"), "dir");
+        const result = spawnSync(process.execPath, [join(dir, "linked", "changesets.mjs")], {
+            cwd: dir,
+            env: {},
+            encoding: "utf8",
+            input: "",
+        });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /no token supplied/);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
 });

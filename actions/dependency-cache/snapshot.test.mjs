@@ -13,6 +13,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -168,4 +169,29 @@ test("snapshot CLI reports recipe and output inputs without invented positions",
     ),
   );
   assert.equal(await readFile(output, "utf8"), "preserved");
+});
+
+test("the script runs when reached through a symlinked directory", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "entry-guard-"));
+  try {
+    symlinkSync(
+      new URL(".", import.meta.url).pathname,
+      path.join(dir, "linked"),
+      "dir",
+    );
+    const result = spawnSync(
+      process.execPath,
+      [path.join(dir, "linked", "snapshot.mjs")],
+      {
+        cwd: dir,
+        env: {},
+        encoding: "utf8",
+        input: "",
+      },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Usage: node snapshot\.mjs/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

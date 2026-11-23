@@ -7,7 +7,7 @@
 import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { isEntryPoint } from "../lib/entry.mjs";
 import { validateLock, verifySnapshot } from "./snapshot.mjs";
 import { atInput, inputError, readJson, report } from "./diagnostics.mjs";
 
@@ -100,8 +100,4 @@ async function main(args) {
   });
   await atInput(args[9], () => restore(args[1], lock, args[9], expected));
 }
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
-)
-  main(process.argv.slice(2)).catch(report);
+if (isEntryPoint(import.meta.url)) main(process.argv.slice(2)).catch(report);

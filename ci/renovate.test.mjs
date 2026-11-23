@@ -6,8 +6,11 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, test } from "node:test";
 import { parse } from "yaml";
 import { APPROVED_BRANCHES, isApprovedAtHead, isAutoApproved, needingApproval } from "../renovate/approve-dependency-prs.mjs";
@@ -126,4 +129,21 @@ describe("approving patch and lockfile pull requests", () => {
         const pending = { pr: pr({ number: 2 }), reviews: [] };
         assert.deepEqual(needingApproval([done, pending]).map((p) => p.number), [2]);
     });
+});
+
+test("the approval script runs when reached through a symlinked directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "entry-guard-"));
+    try {
+        symlinkSync(new URL("../renovate/", import.meta.url).pathname, join(dir, "linked"), "dir");
+        const result = spawnSync(process.execPath, [join(dir, "linked", "approve-dependency-prs.mjs")], {
+            cwd: dir,
+            env: {},
+            encoding: "utf8",
+            input: "",
+        });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /RELEASE_BOT_TOKEN is not set/);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
 });

@@ -78,3 +78,12 @@ runs:
         AUTHOR_NAME: ${{ inputs.author-name }}
         AUTHOR_EMAIL: ${{ inputs.author-email }}
       run: node "$GITHUB_ACTION_PATH/version-pr.mjs"
+    - name: Require a decision
+      shell: bash
+      env:
+        HAS_CHANGESETS: ${{ steps.version-pr.outputs.has-changesets }}
+      run: |
+        case "$HAS_CHANGESETS" in
+          true|false) ;;
+          *) echo "version-pr: error: the script ended without deciding has-changesets" >&2; exit 1 ;;
+        esac

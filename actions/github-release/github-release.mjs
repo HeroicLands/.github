@@ -22,7 +22,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, globSync, readFileSync, statSync } from "node:fs";
 import { basename, extname } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isEntryPoint } from "../lib/entry.mjs";
 
 /** GitHub's limit on a release body, in characters. */
 export const BODY_LIMIT = 125000;
@@ -610,7 +610,7 @@ export async function main(env = process.env) {
     await finish(done.body);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (isEntryPoint(import.meta.url)) {
     try {
         await main();
     } catch (error) {
